@@ -379,6 +379,117 @@ def validar_estoque() -> Relatorio:
     return rel
 
 
+SQL_SUGESTAO_ROLOS = """
+with itens as (
+    select Pedido, Item, Produto, Cor, Qtde,
+           (Qtde - Qtde_Romaneio - Qtde_Acerto) as Qtde_Saldo
+    from Vw_Car_Itens_Pedido
+    where (Qtde - Qtde_Romaneio - Qtde_Acerto) > 0
+),
+disp as (
+    select CP.Produto, CP.Cor, CP.SubLote, CP.Gaveta, CP.Nro_Rolo, CP.Nro_Peca, CP.Metros,
+           row_number() over (
+               partition by CP.Produto, CP.Cor
+               order by CP.Gaveta, CP.Tear desc, CP.Nro_Rolo desc
+           ) as rn
+    from Cte_Peca CP
+    left join CTE_Baixa CB
+        on CP.Empresa = CB.Empresa and CP.Situacao = CB.Situacao
+        and CP.Nro_Rolo = CB.Nro_Rolo and CP.Nro_Peca = CB.Nro_Peca
+    where CP.Nro_Rolo_Origem is null and CB.Empresa is null
+),
+acum as (
+    select d.*, sum(d.Metros) over (
+               partition by d.Produto, d.Cor order by d.rn
+               rows between unbounded preceding and current row
+           ) as Soma_Metros
+    from disp d
+),
+sel as (
+    select i.Pedido, i.Item, i.Produto, i.Cor, i.Qtde, i.Qtde_Saldo,
+           a.SubLote, a.Gaveta, a.Nro_Rolo, a.Nro_Peca, a.Metros
+    from itens i
+    join acum a on a.Produto = i.Produto and a.Cor = i.Cor
+    where a.Soma_Metros <= i.Qtde_Saldo or abs(a.Soma_Metros - i.Qtde_Saldo) < 0.01
+)
+select Pedido, Item, Produto, Cor, min(Qtde) as Qtde_Item, Qtde_Saldo, min(SubLote) as Sublote,
+       count(*) as Qtde_Pecas, sum(Metros) as Total_Metros,
+       stuff((select ', ' + cast(Gaveta as varchar(20)) from (
+                   select distinct Gaveta from sel s3
+                    where s3.Pedido = s.Pedido and s3.Item = s.Item) g
+                 order by Gaveta
+                 for xml path(''), type).value('.', 'nvarchar(max)'), 1, 2, '') as Gavetas,
+       stuff((select ', ' + right('0000000000' + Nro_Rolo, 10) + right('000' + Nro_Peca, 3)
+                from sel s4 where s4.Pedido = s.Pedido and s4.Item = s.Item
+                order by Nro_Rolo, Nro_Peca
+                for xml path(''), type).value('.', 'nvarchar(max)'), 1, 2, '') as Rolos
+from sel s
+group by Pedido, Item, Produto, Cor, Qtde_Saldo
+"""
+
+CAMPOS_SUGESTAO = ("qtde_saldo", "qtde_pecas", "total_metros", "sublote", "gavetas", "rolos")
+
+
+def _valor(linha: object, nome: str) -> object:
+    """Le a coluna ignorando caixa: o ERP devolve `Qtde_Pecas`, o Postgres `qtde_pecas`."""
+    for chave, conteudo in dict(linha).items():
+        if chave.lower() == nome:
+            return conteudo
+    raise KeyError(nome)
+
+
+def _chave_sugestao(linha: object) -> tuple[str, str, str, str]:
+    return (
+        str(_valor(linha, "pedido")).strip(),
+        str(_valor(linha, "item")),
+        str(_valor(linha, "produto")).strip(),
+        str(_valor(linha, "cor")).strip(),
+    )
+
+
+def validar_sugestao_rolos() -> Relatorio:
+    """core.pedido_sugestao_rolos x logica de uspEnderecamentoParaAtenderPedidoGeral.
+
+    A procedure do `DBProDash` e criptografada; a referencia e a mesma logica escrita como
+    SELECT sobre as tabelas legiveis do ERP, que e o que a migration `0010` portada.
+    """
+    print("\n== sugestao de rolos (uspEnderecamentoParaAtenderPedidoGeral) ==")
+    rel = Relatorio()
+
+    legado = {_chave_sugestao(linha): linha for linha in erp.query(SQL_SUGESTAO_ROLOS)}
+    with warehouse.engine().connect() as conn:
+        meu = {
+            _chave_sugestao(linha): linha
+            for linha in conn.execute(
+                text(
+                    "select pedido, item, produto, cor, qtde_saldo, qtde_pecas, total_metros, "
+                    "sublote, gavetas, rolos from core.pedido_sugestao_rolos"
+                )
+            ).mappings()
+        }
+
+    rel.conferir("itens com sugestao", len(meu), len(legado))
+    for chave_item in sorted(set(legado) | set(meu)):
+        esperado, obtido = legado.get(chave_item), meu.get(chave_item)
+        if esperado is None or obtido is None:
+            rel.conferir(f"item {chave_item} presente", obtido is not None, esperado is not None)
+            continue
+        for nome in CAMPOS_SUGESTAO:
+            ref, meu_valor = _valor(esperado, nome), _valor(obtido, nome)
+            if nome in ("qtde_pecas", "qtde_saldo"):
+                rel.conferir(f"{chave_item} {nome}", int(meu_valor or 0), int(ref or 0))
+            elif nome == "total_metros":
+                rel.conferir(f"{chave_item} {nome}", _dec(meu_valor), _dec(ref))
+            else:
+                rel.conferir(
+                    f"{chave_item} {nome}",
+                    str(meu_valor or "").strip(),
+                    str(ref or "").strip(),
+                )
+
+    return rel
+
+
 VALIDADORES = {
     "faturamento": validar_faturamento,
     "faturamento_diario": validar_faturamento_diario,
@@ -387,6 +498,7 @@ VALIDADORES = {
     "estornos": validar_estornos,
     "devolucoes": validar_devolucoes,
     "estoque": validar_estoque,
+    "sugestao_rolos": validar_sugestao_rolos,
 }
 
 
@@ -411,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
             relatorio = validar_financeiro()
         elif alvo == "estoque":
             relatorio = validar_estoque()
+        elif alvo == "sugestao_rolos":
+            relatorio = validar_sugestao_rolos()
         else:
             relatorio = VALIDADORES[alvo](args.meses)
         comparacoes += relatorio.total

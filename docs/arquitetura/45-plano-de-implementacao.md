@@ -1,4 +1,4 @@
-# Plano de implementação (do design à troca da API legada)
+﻿# Plano de implementação (do design à troca da API legada)
 
 > **Data:** 19/set/2026
 > **Situação:** conclusão da **Fase A (design)** — estudos 03–42 + Docs 43/44. Este documento
@@ -113,7 +113,7 @@ próprios no Neon (`public` intocado); `/health` responde lendo o local; ETL con
 
 ### 3.3 Decisões tomadas na Fase B (verificadas no ERP em 02/out/2026)
 
-1. **`raw` é gerado do catálogo do ERP, não escrito à mão.** As 37 fontes somam ~2.300 colunas;
+1. **`raw` é gerado do catálogo do ERP, não escrito à mão.** As 45 fontes do registry somam ~2.400 colunas;
    `python -m src.cli introspect --apply` lê `sys.columns`/`sys.types` e cria as tabelas com
    nomes snake_case, tipos traduzidos e `COMMENT ON` citando a coluna de origem. Novas colunas no
    ERP entram por `ALTER TABLE ... ADD COLUMN` (aditivo, sem dropar). `--recriar` recria o schema
@@ -186,7 +186,7 @@ Objetivo: dados das fontes dos contratos no `raw` (sem regra) do **warehouse loc
 Critério de aceite C: cada tabela do `raw` (local) com contagem batendo com a do ERP (amostras) e
 `etl.watermark` (local) avançando nas execuções posteriores.
 
-**Estado da Fase C (02/out/2026): bootstrap concluído e conferido.** As 37 fontes foram carregadas
+**Estado da Fase C (02/out/2026): bootstrap concluído e conferido.** As 37 fontes iniciais foram carregadas
 por `python -m src.cli bootstrap --dominio <dominio>` na ordem de dependência (pai antes do filho),
 todas com `status = ok` e contagem idêntica ao ERP:
 
@@ -224,10 +224,10 @@ Portar as regras (da Doc 44 §2.2 e Estudos 12/29/30/31):
 
 | Mart/core | Regra a portar (fonte atual) |
 |-----------|------------------------------|
-| `core.estoque_pecas_em_aberto` | `Cte_Peca` antijoin `CTE_Baixa` + `Nro_Rolo_Origem IS NULL` (= `VW_CTE_PECA_EM_ABERTO`) |
-| `core.sugestao_rolos` | janela `SUM(Metros) OVER (gaveta, tear DESC, rolo DESC)` até `Qtde_Saldo` (Vw_Car_Itens_Pedido) — reimplementar em Python |
+| `core.estoque_pecas_em_aberto` | `Cte_Peca` antijoin `CTE_Baixa` (sem `Nro_Rolo_Origem`) = `VW_CTE_PECA_EM_ABERTO` |
+| `core.pedido_sugestao_rolos` | janela `SUM(Metros) OVER (gaveta, tear DESC, rolo DESC)` até `Qtde_Saldo` (Vw_Car_Itens_Pedido) |
 | `marts.faturamento_diario` | `vwFaturamento` → `SUM(Vr_Total)+SUM(Acres_Desc)` por `Data_Nota` (QMP `Base_Calc` P/M) |
-| `marts.contas_pagas_diario` | `vwContasPagas` → baixas por `Data_Baixa`, Empresa `'13'`, Tipo_Entidade A/F |
+| `marts.contas_pagas_diario` | `vwContasPagas` → baixas por `Data_Baixa` (**sem filtro** de empresa/tipo) |
 | `marts.custos_por_departamento_mensal` | relatório de centro de custo/departamento (hoje `Rel_CCusto_Niveis` + `vwContasPagasCentroCusto*`) |
 | `marts.devolucoes_diario` | `vwListagemDeEntradasSaidasPorCFOP` com CFOP de devolução (1.201/1.156/1.202/2.202) |
 | `marts.estornos_diario` | `vwListagemDeEstornos` → `SUM(Vr_Nota)` por `Data_Emissao` |
@@ -284,6 +284,32 @@ Portar as regras (da Doc 44 §2.2 e Estudos 12/29/30/31):
   `Car_Variante`; 82 linhas) porque os `INNER JOIN` descartam peças com cadastro ausente.
 - Conferência: **18.408 peças**, Σ metros 1.328.342,55, Σ peso 335.934,4908 — igual à canônica
   **e** à `DBProDash.vwSaldoTecidosEstoqueDetalhado` (criptada, 18.408 linhas).
+
+**Sugestão de rolos: portada e validada (02/out/2026).** Rev `0010`. A `uspEnderecamentoParaAtenderPedidoGeral`
+do `DBProDash` é criptografada, mas a **procedure irmã legível** na base canônica
+(`DBMicrodata.dbo`) é a mesma regra, então a portada segue dela:
+
+- 3 views: `core.estoque_rolos_disponiveis` (peça com `Nro_Rolo_Origem IS NULL` e sem baixa por
+  `Empresa+Situacao+Nro_Rolo+Nro_Peca`), `core.sugestao_rolos_acumulado`
+  (`ROW_NUMBER`/`SUM ... ROWS UNBOUNDED PRECEDING` por `Produto+Cor`) e `core.pedido_sugestao_rolos`
+  (uma linha por **item** do pedido, com `Sublote`, `Gavetas`, `Rolos`, `Qtde_Pecas`, `Total_Metros`).
+- `Qtde_Saldo = Qtde - Qtde_Romaneio - Qtde_Acerto`; só itens com saldo positivo geram linha.
+  `Vws_Car_Itens_Pedido` é `Car_Itens_Pedido` + `INNER JOIN Liv_Diario` (só 1 empresa no estoque, filtro inócuo).
+- **Armadilha de ordenação:** no SQL Server `NULL` é o menor valor, então `Tear DESC` joga os rolos
+  **sem tear para o fim**; no Postgres o padrão de `DESC` é `NULLS FIRST` — o oposto. A ordem correta é
+  `tear DESC NULLS LAST`. Sem isso a sugestão começa pelo rolo errado (achado na validação: 2 itens
+  de produto `000020`/`00002` divergentes em `Rolos` e `Total_Metros`).
+- A procedure emite uma linha por item (cursor) e usa `TOP 1 Qtde` para exibição quando o mesmo
+  `(Produto, Cor)` repete no pedido — arbitrário no legado; aqui é `min(qtde)` (4 combinações
+  repetidas com saldo > 0).
+- Conferência contra a mesma lógica escrita como `SELECT` sobre as tabelas legíveis do ERP:
+  **571/571** (95 itens sugeridos em 69 pedidos, 1.243 peças, 83.715,10 m) e
+  `core.estoque_rolos_disponiveis` = **18.384 peças em 98 combinações** (≠ 18.408 do estoque em
+  aberto: aqui o `Nro_Rolo_Origem` e a `Situacao` entram no antijoin).
+
+**Estado da Fase D (02/out/2026):** 7 de 8 fatias portadas — falta só
+`marts.custos_por_departamento_mensal` (`Rel_CCusto_Niveis` + `vwContasPagasCentroCusto*`).
+`python -m scripts.validar_fase_d` fecha em **727/727** comparações iguais ao `DBProDash`.
 
 Validação D: para amostras (mês corrente + 12 meses), KPIs do Neon **iguais** aos do `DBProDash`
 (divergência < 0.01); para estoque, 10 pedidos reais com mesma sugestão de rolos. Só então os
@@ -347,10 +373,11 @@ warehouse local completo; legado desligado sem perda de tela.
 - [x] Alembic: migrations 0001–0004 no **Postgres local** + schemas próprios no Neon (Fase B).
 - [x] Módulo `db/erp.py` (conexão read-only) + prova de conceito de extract de 1 domínio
       (`Fat_Pedido`: 12.746 linhas × 215 colunas em ~17s, contagem idêntica ao ERP).
-- [x] Implementar ETL incremental + `etl.watermark` (local); bootstrap das 37 fontes concluído e conferido.
+- [x] Implementar ETL incremental + `etl.watermark` (local); bootstrap conferido (37 fontes
+      iniciais + 8 acrescentadas na Fase D = 45 no registry).
 - [ ] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D) — **faturamento, contas pagas,
-      financeiro programado, estornos, devoluções e estoque em aberto prontos (156/156)**; falta
-      sugestão de rolos e custos/centro de custo.
+      financeiro programado, estornos, devoluções, estoque em aberto e sugestão de rolos prontos
+      (727/727)**; falta só custos/centro de custo.
 - [ ] Endpoints + auth + PDF (Fase E); **sync on-demand dos KPIs p/ Neon**; testar contrato contra legado.
 - [ ] Cutover (Fase F) e documentação final.
 

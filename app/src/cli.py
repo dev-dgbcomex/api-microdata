@@ -199,7 +199,10 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     elif args.tudo or args.dominio:
         selecionadas = list(sources.por_dominio(args.dominio))
     else:
-        print("informe --dominio, --tudo ou --pai (evita carga acidental das 37 fontes)")
+        print(
+            f"informe --dominio, --tudo ou --pai "
+            f"(evita carga acidental das {len(sources.FONTES)} fontes)"
+        )
         return 2
 
     inicio = monotonic()
@@ -305,7 +308,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="carrega as fontes do ERP no raw na ordem de dependencia e reconcilia",
     )
     p_boot.add_argument("--dominio", help="cadastros, faturamento, contas_pagar, ...")
-    p_boot.add_argument("--tudo", action="store_true", help="carrega todas as 37 fontes")
+    p_boot.add_argument(
+        "--tudo", action="store_true", help=f"carrega todas as {len(sources.FONTES)} fontes"
+    )
     p_boot.add_argument("--pai", help="carrega so a fonte informada e os filhos dela")
     p_boot.add_argument("--limite", type=int, help="maximo de linhas por fonte")
     p_boot.add_argument("--incremental", action="store_true", help="usa etl.watermark")

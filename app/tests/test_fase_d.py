@@ -27,6 +27,7 @@ migration_marts = carregar_migration("0006_marts_faturamento")
 migration_financeiro = carregar_migration("0007_core_financeiro")
 migration_estornos = carregar_migration("0008_marts_estornos")
 migration_estoque = carregar_migration("0009_core_estoque")
+migration_sugestao = carregar_migration("0010_core_sugestao_rolos")
 
 
 class TestWhitelistCFOP:
@@ -148,6 +149,50 @@ class TestEstoqueEmAberto:
         ddl = migration_estoque.VIEW_ESTOQUE_SALDO
         assert "GROUP BY produto, situacao, cor, desenho, categoria, variante" in ddl
         assert "sum(coalesce(metros, 0))             AS metros" in ddl
+
+
+class TestSugestaoDeRolos:
+    def test_disponiveis_exige_peca_sem_origem_e_sem_baixa(self):
+        ddl = migration_sugestao.VIEW_ROLOS_DISPONIVEIS
+        assert "cp.nro_rolo_origem IS NULL" in ddl
+        assert "NOT EXISTS" in ddl
+        for coluna in ("empresa", "situacao", "nro_rolo", "nro_peca"):
+            assert f"cb.{coluna} = cp.{coluna}" in ddl, coluna
+
+    def test_acumulado_usa_a_ordem_do_enderecamento(self):
+        ddl = migration_sugestao.VIEW_ACUMULADO
+        assert "PARTITION BY produto, cor" in ddl
+        assert "ORDER BY gaveta, tear DESC NULLS LAST, nro_rolo DESC" in ddl
+
+    def test_tem_saldo_so_para_tear_e_nulo_ao_fim(self):
+        """NULL e o menor valor no SQL Server; o padrao do Postgres seria o contrario."""
+        ddl = migration_sugestao.VIEW_ACUMULADO
+        assert "NULLS FIRST" not in ddl
+        assert ddl.count("tear DESC NULLS LAST") == 2
+
+    def test_seleciona_ate_cobrir_o_saldo(self):
+        ddl = migration_sugestao.VIEW_SUGESTAO_ROLOS
+        assert "(qtde - coalesce(qtde_romaneio, 0) - coalesce(qtde_acerto, 0)) AS qtde_saldo" in ddl
+        assert "i.qtde_saldo > 0" in ddl
+        assert "a.soma_metros <= i.qtde_saldo" in ddl
+        assert "abs(a.soma_metros - i.qtde_saldo) < 0.01" in ddl
+
+    def test_saida_por_item_com_rolos_formatados(self):
+        ddl = migration_sugestao.VIEW_SUGESTAO_ROLOS
+        assert "GROUP BY i.empresa, i.pedido, i.item, i.produto, i.cor, i.qtde_saldo" in ddl
+        assert "lpad(a.nro_rolo, 10, '0') || lpad(a.nro_peca, 3, '0')" in ddl
+        assert "ORDER BY a.nro_rolo, a.nro_peca" in ddl
+
+    def test_rollback_derruba_as_tres_views(self):
+        import inspect
+
+        codigo = inspect.getsource(migration_sugestao.downgrade)
+        for view in (
+            "core.pedido_sugestao_rolos",
+            "core.sugestao_rolos_acumulado",
+            "core.estoque_rolos_disponiveis",
+        ):
+            assert f"DROP VIEW IF EXISTS {view}" in codigo, view
 
 
 class TestJanelasDeMes:
