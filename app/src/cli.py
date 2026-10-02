@@ -5,15 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from time import monotonic
 from typing import Any
 
 from src.config import get_settings
 from src.db import erp, neon, warehouse
 from src.db.postgres import ping
-from src.etl import audit, sources
+from src.etl import bootstrap, pipeline, sources
 from src.etl.extract import introspect, reader
-from src.etl.load import upsert
-from src.etl.transform import values
 from src.etl.transform.naming import snake_case
 
 
@@ -116,23 +115,13 @@ def cmd_introspect(args: argparse.Namespace) -> int:
         )
 
     if args.apply:
-        with warehouse.engine().begin() as conn:
-            if args.recriar:
-                print("recriando o schema raw...")
-                conn.exec_driver_sql("DROP SCHEMA IF EXISTS raw CASCADE")
-                conn.exec_driver_sql("DELETE FROM etl.raw_ddl")
-            conn.exec_driver_sql("CREATE SCHEMA IF NOT EXISTS raw")
-        for fonte, _, _ in planos:
-            resultado = introspect.sincronizar(warehouse.engine(), fonte)
-            comandos = resultado["criada"]
-            with warehouse.engine().begin() as conn:
-                for comando in comandos:
-                    conn.exec_driver_sql(comando)
-            introspect.registrar_ddl(
-                warehouse.engine(), fonte, comandos, resultado["colunas"]
-            )
-            print(f"  DDL aplicado: {len(comandos)} comando(s)")
-        introspect.registrar_fontes(warehouse.engine(), selecionadas)
+        engine = warehouse.engine()
+        if args.recriar:
+            print("recriando o schema raw...")
+            introspect.recriar(engine)
+        aplicados = introspect.aplicar(engine, selecionadas)
+        for fonte, comandos in aplicados:
+            print(f"  {fonte.tabela_erp:<26} {len(comandos):>4} comando(s)")
         print(f"\netl.fontes: {len(selecionadas)} fonte(s) registrada(s)")
         return 0
 
@@ -146,85 +135,39 @@ def cmd_introspect(args: argparse.Namespace) -> int:
 def cmd_extract(args: argparse.Namespace) -> int:
     fonte = sources.por_tabela(args.tabela)
     engine = warehouse.engine()
-    colunas_pg, chave_pg = introspect.planejar(fonte)
-    meta_erp = introspect.colunas_erp(fonte.tabela_erp)
-    mapa = {coluna.origem: coluna.nome for coluna in colunas_pg}
-    colunas_erp = list(mapa)
-    colunas_raw = [mapa[coluna] for coluna in colunas_erp]
-
-    desde = None
-    if args.incremental and fonte.coluna_watermark:
-        desde = audit.get_watermark(engine, fonte.tabela_erp)
-        print(f"watermark de {fonte.tabela_erp}: {desde}")
 
     if args.dry_run:
+        colunas_erp, _, _, _ = pipeline._plano(fonte)
         pagina = next(reader.extrair(fonte.tabela_erp, colunas_erp, limite=args.limite), [])
         print(json.dumps(pagina[: args.amostra], indent=2, ensure_ascii=False, default=str))
         return 0
 
-    tipo = "incremental" if desde is not None else (
-        "reconciliacao" if fonte.estrategia in {"full", "reconciliacao"} else "bootstrap"
-    )
-    recarrega_pai = fonte.estrategia == "recarrega_pai" and fonte.pai and not args.sem_pai
-    chave_pai = [snake_case(coluna) for coluna in fonte.colunas_chave_pai()]
-    pais_apagados: set[tuple[Any, ...]] = set()
-    total = 0
-    with audit.execucao(
+    def progresso(total: int) -> None:
+        print(f"  {total} linha(s) carregada(s)...")
+
+    resultado = pipeline.carregar(
         engine,
-        dominio=fonte.dominio,
-        tabela=fonte.tabela_erp,
-        tipo=tipo,
-        parcial=args.limite is not None,
-    ) as reg:
-        for pagina in reader.extrair(
-            fonte.tabela_erp,
-            colunas_erp,
-            coluna_watermark=fonte.coluna_watermark if desde is not None else None,
-            desde=desde,
-            limite=args.limite,
-        ):
-            linhas = []
-            for pagina_linha in pagina:
-                limpa = values.linha_limpa(meta_erp, pagina_linha)
-                linhas.append(
-                    {colunas_raw[i]: limpa.get(coluna) for i, coluna in enumerate(colunas_erp)}
-                )
-            if recarrega_pai:
-                documentos: dict[tuple[Any, ...], dict[str, Any]] = {}
-                for linha in linhas:
-                    documentos.setdefault(tuple(linha[c] for c in chave_pai), linha)
-                novos = [v for k, v in documentos.items() if k not in pais_apagados]
-                pais_apagados.update(documentos)
-                if novos:
-                    apagadas = upsert.apagar_documentos(engine, fonte.destino, chave_pai, novos)
-                    print(f"  {apagadas} linha(s) de {len(novos)} documento(s) substituida(s)")
-            total += upsert.upsert(engine, fonte.destino, chave_pg, colunas_raw, linhas)
-            print(f"  {total} linha(s) carregada(s)...")
-        reg.linhas = total
-        reg.mensagem = f"colunas={len(colunas_raw)}"
+        fonte,
+        limite=args.limite,
+        incremental=args.incremental,
+        recarrega_pai=not args.sem_pai,
+        gravar_watermark=not args.sem_watermark,
+        progresso=progresso,
+    )
+    for aviso in resultado.avisos:
+        print(f"aviso: {aviso}")
+    if resultado.watermark is not None:
+        print(f"watermark gravado: {resultado.watermark}")
 
-    if fonte.coluna_watermark and not args.sem_watermark:
-        maximo = erp.scalar(f"select max([{fonte.coluna_watermark}]) from [{fonte.tabela_erp}]")
-        if args.limite is not None:
-            print(
-                f"carga parcial (--limite {args.limite}); watermark NAO gravado "
-                "para nao pular linhas na proxima execucao"
-            )
-        elif maximo is None:
-            print(f"aviso: max({fonte.coluna_watermark}) e nulo; watermark nao gravado")
-        else:
-            audit.set_watermark(
-                engine,
-                fonte.tabela_erp,
-                fonte.coluna_watermark,
-                maximo,
-                linhas=total,
-            )
-            print(f"watermark gravado: {maximo}")
-
-    with engine.connect() as conn:
-        gravadas = conn.exec_driver_sql(f"select count(*) from raw.{fonte.destino}").scalar_one()
-    print(f"raw.{fonte.destino}: {gravadas} linha(s) no warehouse (desta execucao: {total})")
+    no_erp, no_raw = pipeline.conferer(engine, fonte)
+    print(
+        f"raw.{resultado.fonte.destino}: {no_raw} linha(s) "
+        f"(ERP {no_erp}, desta execucao {resultado.linhas}, "
+        f"{resultado.documentos} documento(s) relidos)"
+    )
+    if no_erp is not None and no_erp != no_raw:
+        print(f"ATENCAO: contagem divergente (ERP {no_erp} x raw {no_raw})")
+        return 1
     return 0
 
 
@@ -244,6 +187,50 @@ def cmd_health(args: argparse.Namespace) -> int:
         except Exception as exc:
             resultado[nome] = {"ok": False, "erro": f"{type(exc).__name__}: {exc}"}
     print(json.dumps(resultado, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_bootstrap(args: argparse.Namespace) -> int:
+    engine = warehouse.engine()
+    if args.pai:
+        selecionadas = [
+            f for f in sources.FONTES if f.pai == args.pai or f.tabela_erp == args.pai
+        ]
+    elif args.tudo or args.dominio:
+        selecionadas = list(sources.por_dominio(args.dominio))
+    else:
+        print("informe --dominio, --tudo ou --pai (evita carga acidental das 37 fontes)")
+        return 2
+
+    inicio = monotonic()
+    carregadas = 0
+    print(f"fontes: {len(selecionadas)}")
+
+    def progresso(tabela: str, linhas: int) -> None:
+        nonlocal carregadas
+        carregadas += linhas
+        print(f"  {tabela:<24} {linhas:>9,} linha(s)  (total {carregadas:,})".replace(",", "."))
+
+    relatorio = bootstrap.executar(
+        engine,
+        selecionadas,
+        limite=args.limite,
+        incremental=args.incremental,
+        conferir=not args.sem_conferencia,
+    )
+
+    print("\n-- conferencia ERP x raw --")
+    divergentes = bootstrap.divergentes(relatorio)
+    for linha in relatorio:
+        marca = " " if linha not in divergentes else "!"
+        print(
+            f"{marca}{linha.fonte.tabela_erp:<24} erp={str(linha.linhas_erp):>9} "
+            f"raw={str(linha.linhas_raw):>9} {linha.aviso}"
+        )
+    print(f"\n{round(monotonic() - inicio, 1)}s de execucao")
+    if divergentes:
+        print(f"{len(divergentes)} tabela(s) divergente(s)", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -312,6 +299,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="nao grava etl.watermark ao final da carga",
     )
     p_extract.set_defaults(func=cmd_extract)
+
+    p_boot = sub.add_parser(
+        "bootstrap",
+        help="carrega as fontes do ERP no raw na ordem de dependencia e reconcilia",
+    )
+    p_boot.add_argument("--dominio", help="cadastros, faturamento, contas_pagar, ...")
+    p_boot.add_argument("--tudo", action="store_true", help="carrega todas as 37 fontes")
+    p_boot.add_argument("--pai", help="carrega so a fonte informada e os filhos dela")
+    p_boot.add_argument("--limite", type=int, help="maximo de linhas por fonte")
+    p_boot.add_argument("--incremental", action="store_true", help="usa etl.watermark")
+    p_boot.add_argument(
+        "--sem-conferencia",
+        action="store_true",
+        help="nao compara a contagem do ERP com a do raw",
+    )
+    p_boot.set_defaults(func=cmd_bootstrap)
     return parser
 
 

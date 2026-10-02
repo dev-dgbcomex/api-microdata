@@ -76,6 +76,25 @@ def test_comentario_com_apostofo_gerado_em_sql_valido():
     assert comentario.count("'") % 2 == 0
 
 
+def test_comentario_com_percent_nao_quebra_o_execucao():
+    """`doc` com % roda em text() (exec_driver_sql interpretaria como placeholder)."""
+    fonte = sources.por_tabela("Clientes_Principal")
+    colunas = [ColunaPG("codigo_cliente", "integer", "Codigo_Cliente")]
+    comentario = next(
+        comando
+        for comando in introspect.criar_tabela_sql(fonte, colunas, ["codigo_cliente"])
+        if comando.startswith("COMMENT ON TABLE")
+    )
+    assert "100% NULL" in comentario
+
+
+def test_largura_usa_o_maior_entre_declarado_e_observado():
+    declarado = coluna("Inscricao_Municipal", "char", tamanho=7)
+    assert introspect.mapear_tipo(declarado) == "varchar(7)"
+    assert introspect.mapear_tipo(declarado, observado=8) == "varchar(8)"
+    assert introspect.mapear_tipo(declarado, observado=5000) == "text"
+
+
 def test_upsert_atualiza_apenas_fora_da_chave():
     sql = _upsert_sql("fat_pedido", ["empresa", "pedido", "valor"], ["empresa", "pedido"])
     assert "on conflict (empresa, pedido)" in sql

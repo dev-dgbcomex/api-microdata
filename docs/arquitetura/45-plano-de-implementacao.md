@@ -186,6 +186,34 @@ Objetivo: dados das fontes dos contratos no `raw` (sem regra) do **warehouse loc
 Critério de aceite C: cada tabela do `raw` (local) com contagem batendo com a do ERP (amostras) e
 `etl.watermark` (local) avançando nas execuções posteriores.
 
+**Estado da Fase C (02/out/2026): bootstrap concluído e conferido.** As 37 fontes foram carregadas
+por `python -m src.cli bootstrap --dominio <dominio>` na ordem de dependência (pai antes do filho),
+todas com `status = ok` e contagem idêntica ao ERP:
+
+| Domínio | Fontes | Linhas | Tempo |
+|---------|--------|--------|-------|
+| cadastros | 12 | ~23k | 9s |
+| faturamento | 4 | 156.705 | 3min15 |
+| contas_pagar | 5 | ~26k | 8s |
+| contas_receber | 3 | 71.073 | 24s |
+| fiscal | 4 | 68.935 | 1min19 |
+| estoque | 4 | 640.171 | 4min18 |
+
+Total: **37 tabelas, 2.166 colunas, 987.878 linhas, 353 MB** no Postgres local. `Cte_Peca`
+(300.601) e `CTE_Baixa` (282.193) concentram o volume — ficam só no local, conforme o plano.
+
+Extras implementados na Fase C:
+- `src/etl/pipeline.py` (carga de uma fonte) + `src/etl/bootstrap.py` (ordem de dependência e
+  conferência ERP x raw; sai com exit 1 se alguma tabela divergir).
+- **Largura de coluna pelo dado**: o ERP legado estoura o tipo declarado
+  (`Fornecedores.Inscricao_Municipal` é `char(7)` e grava 8). O `introspect` perfila o
+  `max(len(coluna))` de cada coluna de texto e usa `varchar(max(declarado, observado))`
+  (acima de 1.000 caracteres vira `text`).
+- `linhas_erp` cai para `count_big(*)` quando a fonte é view (`sys.partitions` não tem linhas).
+- **Pendência conhecida**: os filhos com `recarrega_pai` (`Liv_EntProd`, `Liv_SaiProd`,
+  `Fat_Itens_Pedido`, `Fat_Parc_Pedido`…) são relidos inteiros a cada execução, mesmo quando o pai
+  não mudou. Próximo passo: recarregar só os documentos cujo pai mudou.
+
 ---
 
 ## 5. Fase D — `core`/`marts` (regras portadas, **no Postgres local**)
@@ -268,7 +296,7 @@ warehouse local completo; legado desligado sem perda de tela.
 - [x] Alembic: migrations 0001–0004 no **Postgres local** + schemas próprios no Neon (Fase B).
 - [x] Módulo `db/erp.py` (conexão read-only) + prova de conceito de extract de 1 domínio
       (`Fat_Pedido`: 12.746 linhas × 215 colunas em ~17s, contagem idêntica ao ERP).
-- [ ] Implementar ETL incremental + `etl.watermark` (local); bootstrap dos cadastros → faturamento → financeiro → estoque.
+- [x] Implementar ETL incremental + `etl.watermark` (local); bootstrap das 37 fontes concluído e conferido.
 - [ ] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D).
 - [ ] Endpoints + auth + PDF (Fase E); **sync on-demand dos KPIs p/ Neon**; testar contrato contra legado.
 - [ ] Cutover (Fase F) e documentação final.
@@ -297,6 +325,8 @@ warehouse local completo; legado desligado sem perda de tela.
 
 _Estado: Fase A concluída. Infra pronta (Neon migrado + Postgres local 17 criado)._
 _Fase B concluída (02/out/2026): scaffold `app/` executável, `alembic upgrade head` no head local,
-37 tabelas `raw` geradas do catálogo do ERP, `/health` = 200 e PoC de carga validada contra o ERP.
-Próximo checkpoint: Fase C (bootstrap completo + incremental). Decisões D5–D8 ainda pendentes de
-confirmação (auth JWT, contrato do front, on-demand do Neon, decommission do legado)._
+37 tabelas `raw` geradas do catálogo do ERP, `/health` = 200 e PoC de carga validada contra o ERP._
+_Fase C concluída (02/out/2026): bootstrap das 37 fontes carregado e reconciliado com o ERP
+(987.878 linhas, contagem idêntica em todas as tabelas) + incremental por watermark e recarga por
+pai. Próximo checkpoint: Fase D (`core`/`marts` com as regras portadas). Decisões D5–D8 ainda
+pendentes de confirmação (auth JWT, contrato do front, on-demand do Neon, decommission do legado)._

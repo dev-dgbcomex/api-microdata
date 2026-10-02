@@ -71,13 +71,14 @@ class ColunaPG:
 
 nome_pg = snake_case
 
-def mapear_tipo(coluna: ColunaERP) -> str:
+def mapear_tipo(coluna: ColunaERP, observado: int | None = None) -> str:
     base = coluna.base.lower()
     tamanho = coluna.tamanho
     precisao = coluna.precisao
     escala = coluna.escala
     if base in {"char", "varchar", "nchar", "nvarchar", "sysname"}:
-        return f"varchar({tamanho})" if tamanho and 0 < tamanho <= 300 else "text"
+        largura = max(tamanho or 0, observado or 0)
+        return f"varchar({largura})" if 0 < largura <= 1000 else "text"
     if base in {"text", "ntext", "xml", "sql_variant"}:
         return "text"
     if base in {"tinyint", "smallint"}:
@@ -111,10 +112,49 @@ def mapear_tipo(coluna: ColunaERP) -> str:
     return "text"
 
 
-def normalizar(coluna_erp: ColunaERP) -> ColunaPG:
+TEXTO_BASE = {"char", "nchar", "varchar", "nvarchar", "sysname", "text", "ntext", "xml"}
+
+
+def _ident(tabela: str) -> str:
+    return "[" + tabela.replace("]", "]]") + "]"
+
+
+def perfilar_textos(
+    tabela_erp: str,
+    colunas: list[ColunaERP],
+    *,
+    teto: int = 1000,
+) -> dict[str, int]:
+    """Maior tamanho observado por coluna de texto (o ERP legado estoura o declarado).
+
+    Sem isso, `Fornecedores.Cep` (char(7)) gravaria '88.370-888' e estouraria a coluna.
+    """
+    alvo = [c for c in colunas if c.base.lower() in TEXTO_BASE]
+    if not alvo:
+        return {}
+    expressoes: list[str] = []
+    for i, coluna in enumerate(alvo):
+        expressoes.append(
+            f"max(case when {_ident(tabela_erp)}.{_ident(coluna.nome)} is null then 0 "
+            f"else len(convert(varchar(4000), "
+            f"{_ident(tabela_erp)}.{_ident(coluna.nome)})) end) c{i}"
+        )
+    linha = erp.query(f"select {', '.join(expressoes)} from {_ident(tabela_erp)}")[0]
+    observado: dict[str, int] = {}
+    for i, coluna in enumerate(alvo):
+        valor = int(linha[f"c{i}"] or 0)
+        if valor:
+            observado[coluna.nome] = min(valor, teto + 1)
+    return observado
+
+
+def normalizar(
+    coluna_erp: ColunaERP,
+    observado: int | None = None,
+) -> ColunaPG:
     return ColunaPG(
         nome=nome_pg(coluna_erp.nome),
-        tipo_sql=mapear_tipo(coluna_erp),
+        tipo_sql=mapear_tipo(coluna_erp, observado),
         origem=coluna_erp.nome,
     )
 
@@ -151,8 +191,12 @@ def colunas_erp(tabela_erp: str) -> list[ColunaERP]:
 
 
 def linhas_erp(tabela_erp: str) -> int | None:
+    """Contagem real: views não têm linhas em sys.partitions (cai para COUNT)."""
     valor = erp.scalar(SQL_LINHAS, (tabela_erp,))
-    return int(valor) if valor is not None else None
+    if valor is not None:
+        return int(valor)
+    total = erp.scalar(f"select count_big(*) from {_ident(tabela_erp)}")
+    return int(total) if total is not None else None
 
 
 def deduplicar(colunas: list[ColunaPG]) -> list[ColunaPG]:
@@ -166,8 +210,10 @@ def deduplicar(colunas: list[ColunaPG]) -> list[ColunaPG]:
     return saida
 
 
-def planejar(fonte: Fonte) -> tuple[list[ColunaPG], list[str]]:
-    colunas = deduplicar([normalizar(c) for c in colunas_erp(fonte.tabela_erp)])
+def planejar(fonte: Fonte, *, perfilar: bool = True) -> tuple[list[ColunaPG], list[str]]:
+    meta = colunas_erp(fonte.tabela_erp)
+    observado = perfilar_textos(fonte.tabela_erp, meta) if perfilar else {}
+    colunas = deduplicar([normalizar(c, observado.get(c.nome)) for c in meta])
     nomes = {c.nome for c in colunas}
     faltando = [k for k in fonte.chave_natural if nome_pg(k) not in nomes]
     if faltando:
@@ -305,6 +351,14 @@ def registrar_ddl(engine: Engine, fonte: Fonte, ddl: list[str], colunas: list[st
                 "colunas": len(colunas),
             },
         )
+
+
+def recriar(engine: Engine) -> None:
+    """Dropa e recria o schema `raw` (use quando corrigir tipos gerados)."""
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
+        conn.execute(text("DELETE FROM etl.raw_ddl"))
+        conn.execute(text("CREATE SCHEMA raw"))
 
 
 def aplicar(engine: Engine, fontes: list[Fonte]) -> list[tuple[Fonte, list[str]]]:
