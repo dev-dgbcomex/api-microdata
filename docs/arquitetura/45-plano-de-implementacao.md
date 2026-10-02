@@ -98,7 +98,7 @@ app/
 | Migration | Cria |
 |-----------|------|
 | `0001_etl` | schema `etl` + `etl.watermark` (tabela, coluna, ultimo_valor, ultima_exec, status, linhas, levou_s) + `etl.execucoes` + `etl.erros` |
-| `0002_raw` | schema `raw` + tabelas das fontes (espelho, `trim`), vazio |
+| `0002_raw` | schema `raw` **vazio** (as tabelas-fonte são geradas do catálogo do ERP, ver 3.3) |
 | `0003_core` | schema `core` + regras (faturamento, contas pagas, financeiro programado, estoque em aberto) |
 | `0004_marts` | schema `marts` + views de consumo (KPIs diários, estoque em aberto, sugestão de rolos) |
 
@@ -110,6 +110,40 @@ app/
 
 Critério de aceite B: `alembic upgrade head` sobe os 4 schemas no **Postgres local** + schemas
 próprios no Neon (`public` intocado); `/health` responde lendo o local; ETL conecta no ERP (read-only).
+
+### 3.3 Decisões tomadas na Fase B (verificadas no ERP em 02/out/2026)
+
+1. **`raw` é gerado do catálogo do ERP, não escrito à mão.** As 37 fontes somam ~2.300 colunas;
+   `python -m src.cli introspect --apply` lê `sys.columns`/`sys.types` e cria as tabelas com
+   nomes snake_case, tipos traduzidos e `COMMENT ON` citando a coluna de origem. Novas colunas no
+   ERP entram por `ALTER TABLE ... ADD COLUMN` (aditivo, sem dropar). `--recriar` recria o schema
+   quando é preciso corrigir tipos gerados.
+2. **Tipos:** `char/varchar` → `varchar(n)`, `nvarchar` → `varchar(n/2)` (2 bytes por caractere no
+   SQL Server), `decimal` → `numeric(p,s)`, `smalldatetime/datetime` → `timestamp`, `money` →
+   `numeric(19,4)`, `uniqueidentifier` → `uuid`, `xml/text` → `text`. Tipos-alias do ERP
+   (`Pagto`, `Codigo`…) usam o comprimento do **alias**, não o do tipo do sistema.
+3. **Watermarks: 5 das 12 declaradas no estudo não existem de fato.** Conferido no ERP:
+
+   | Fonte | Watermark do estudo | Realidade | Estratégia adotada |
+   |-------|--------------------|-----------|--------------------|
+   | `Clientes_Principal` | `Ult_Atualizacao` | 100% NULL (`ultima_atualizacao_dt` = 8%) | `full` |
+   | `Fat_Pedido` | `Ult_Atualizacao` | 100% NULL (`dh_Emissao` = 97%, mas é emissão, não alteração) | `full` |
+   | `Fat_Itens_Pedido` | `Ult_Atualizacao` | 100% NULL | `recarrega_pai` (Fat_Pedido) |
+   | `Car_Pedido` | `DataHora_Alteracao` | 0,16% preenchido, max de 2018 | `full` |
+   | `Car_Itens_Pedido` | `DtEntrega` | 100% NULL | `recarrega_pai` (Car_Pedido) |
+
+   `python -m src.cli check` reprova (exit 1) qualquer fonte `watermark` com cobertura < 95% ou
+   `max()` nulo, e também qualquer filho `recarrega_pai` sem as colunas da chave do pai.
+4. **Carga parcial nunca grava watermark.** `--limite` marca a execução como `parcial` em
+   `etl.execucoes` e não grava `etl.watermark` (gravar o máximo global após carga parcial pularia
+   linhas na execução seguinte).
+5. **`Fat_Parc_Pedido` tem a chave do pai com nomes próprios** (`Empresa_Parcelas`,
+   `Documento_Parcelas`), declarado em `Fonte.chave_pai` para a recarga por documento funcionar.
+
+**Estado da Fase B (conferido):** 37 tabelas em `raw` (2.166 colunas), `alembic_version` =
+`1001_neon_marts`, `/health` = 200 nos três destinos e prova de conceito de carga com contagem
+idêntica ao ERP (`Condicoes_Pagto` 364, `Fat_Pedido` 12.746, `Fat_Itens_Pedido` 101.113,
+`Fat_Parc_Pedido` 30.102).
 
 ---
 
@@ -130,6 +164,7 @@ Objetivo: dados das fontes dos contratos no `raw` (sem regra) do **warehouse loc
 
 > Antes de implementar, **conferir a coluna watermark exata** de cada tabela nova (Fat_*, Pag_*,
 > Rec_*, Liv_* já mapeados no Estudo 22; confirmar `Fat_*` no Estudo 29) — mesmo método dos estudos.
+> **Já conferido em 02/out/2026**: ver 3.3 (5 watermarks do estudo não existem no ERP).
 
 ### 4.2 Ordem de carga (dependências)
 
@@ -230,8 +265,9 @@ warehouse local completo; legado desligado sem perda de tela.
 - [x] Seed do dgbcomex executado no Neon (4 usuários demo + menus).
 - [x] **Postgres local** nativo instalado (PG 17, `localhost:5432`) e database `dgbcomex_warehouse` criado.
 - [ ] Fase B: criar `app/` com pyproject + venv + deps; `.env` com `DATABASE_URL` (Neon) e `DATABASE_URL_LOCAL`.
-- [ ] Alembic: migrations 0001–0004 no **Postgres local** + schemas próprios no Neon (Fase B).
-- [ ] Módulo `db/erp.py` (conexão read-only) + prova de conceito de extract de 1 domínio (ex. `Fat_Pedido`).
+- [x] Alembic: migrations 0001–0004 no **Postgres local** + schemas próprios no Neon (Fase B).
+- [x] Módulo `db/erp.py` (conexão read-only) + prova de conceito de extract de 1 domínio
+      (`Fat_Pedido`: 12.746 linhas × 215 colunas em ~17s, contagem idêntica ao ERP).
 - [ ] Implementar ETL incremental + `etl.watermark` (local); bootstrap dos cadastros → faturamento → financeiro → estoque.
 - [ ] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D).
 - [ ] Endpoints + auth + PDF (Fase E); **sync on-demand dos KPIs p/ Neon**; testar contrato contra legado.
@@ -243,7 +279,9 @@ warehouse local completo; legado desligado sem perda de tela.
 
 - **Volume**: `Cte_Peca` (~317k) e itens de romaneio dominam a carga — **vão só para o Postgres
   local** (agendar fora do expediente); o Neon nunca recebe esse volume.
-- **Watermarks ausentes**: tabelas sem coluna de data exigem recarga por pai (já previsto).
+- **Watermarks ausentes**: confirmado no ERP — `Clientes_Principal`, `Fat_Pedido`,
+  `Fat_Itens_Pedido`, `Car_Pedido` e `Car_Itens_Pedido` **não têm coluna de alteração utilizável**
+  (3 delas são 100% NULL). Viram `full`/`recarrega_pai`; `src.cli check` impede regressão.
 - **Dependência de rede**: runner do ETL precisa alcançar `10.156.0.124` (ERP on-prem).
 - **Auth nova**: migrar usuários/escopos (do `Usuario_Acessos`) é trabalho próprio — iniciar cedo.
 - **Contrato do front**: mudanças em marts (locais e do Neon) quebram o `dgbcomex` — aditivo e versionado.
@@ -257,5 +295,8 @@ warehouse local completo; legado desligado sem perda de tela.
 
 ---
 
-_Estado: Fase A concluída. Infra pronta (Neon migrado + Postgres local 17 criado). Próximo
-checkpoint: Fase B (scaffold `app/`) — decisões D5–D8 pendentes de confirmação._
+_Estado: Fase A concluída. Infra pronta (Neon migrado + Postgres local 17 criado)._
+_Fase B concluída (02/out/2026): scaffold `app/` executável, `alembic upgrade head` no head local,
+37 tabelas `raw` geradas do catálogo do ERP, `/health` = 200 e PoC de carga validada contra o ERP.
+Próximo checkpoint: Fase C (bootstrap completo + incremental). Decisões D5–D8 ainda pendentes de
+confirmação (auth JWT, contrato do front, on-demand do Neon, decommission do legado)._
