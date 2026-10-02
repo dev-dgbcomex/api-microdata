@@ -26,6 +26,7 @@ migration_core = carregar_migration("0005_core_faturamento")
 migration_marts = carregar_migration("0006_marts_faturamento")
 migration_financeiro = carregar_migration("0007_core_financeiro")
 migration_estornos = carregar_migration("0008_marts_estornos")
+migration_estoque = carregar_migration("0009_core_estoque")
 
 
 class TestWhitelistCFOP:
@@ -122,6 +123,31 @@ class TestEstornosEDevolucoes:
         assert "emissao::date                           AS data" in (
             migration_estornos.VIEW_ESTORNOS_DIARIO
         )
+
+
+class TestEstoqueEmAberto:
+    def test_regra_e_o_antijoin_com_as_baixas(self):
+        ddl = migration_estoque.VIEW_ESTOQUE_EM_ABERTO
+        assert "FROM raw.cte_baixa b" in ddl
+        assert "WHERE NOT EXISTS" in ddl
+        assert "b.empresa = a.empresa" in ddl
+        assert "b.nro_rolo = a.nro_rolo" in ddl
+        assert "b.nro_peca = a.nro_peca" in ddl
+
+    def test_joins_de_cadastro_preservam_o_interno_e_o_left(self):
+        ddl = migration_estoque.VIEW_ESTOQUE_EM_ABERTO
+        for tabela in ("produtos", "car_situacoes", "car_cores", "car_desenhos", "car_categorias"):
+            assert f"JOIN raw.{tabela}" in ddl, tabela
+        assert "LEFT JOIN raw.car_variante cv" in ddl
+
+    def test_nao_filtra_por_rolo_de_origem(self):
+        """A view canonica nao usa Nro_Rolo_Origem: a regra e so o antijoin."""
+        assert "nro_rolo_origem IS NULL" not in migration_estoque.VIEW_ESTOQUE_EM_ABERTO
+
+    def test_saldo_agrega_por_combinacao_de_cadastros(self):
+        ddl = migration_estoque.VIEW_ESTOQUE_SALDO
+        assert "GROUP BY produto, situacao, cor, desenho, categoria, variante" in ddl
+        assert "sum(coalesce(metros, 0))             AS metros" in ddl
 
 
 class TestJanelasDeMes:

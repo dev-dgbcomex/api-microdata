@@ -273,6 +273,18 @@ Portar as regras (da Doc 44 §2.2 e Estudos 12/29/30/31):
   (13 meses + 45 dias, nas 6 fatias: faturamento, faturamento diário, contas pagas, financeiro,
   estornos e devoluções).
 
+**Estoque em aberto: portado e validado (02/out/2026).** Rev `0009`. A canônica
+`DBMicrodata.dbo.VW_CTE_PECA_EM_ABERTO` é **legível**, então a regra veio pronta:
+
+- `CTE_Peca` **antijoin** `CTE_Baixa` por `(Empresa, Nro_Rolo, Nro_Peca)`, com `INNER JOIN` em
+  `Produtos` (por `EmpProd`+`Codigo`), `Car_Situacoes`, `Car_Cores`, `Car_Desenhos`,
+  `Car_Categorias` e `LEFT JOIN` em `Car_Variante`.
+- **Sem filtro de `Nro_Rolo_Origem`** (o plano antigo citava; a view não usa) — só o antijoin.
+- 5 cadastros novos no registry (`Car_Cores`, `Car_Situacoes`, `Car_Desenhos`, `Car_Categorias`,
+  `Car_Variante`; 82 linhas) porque os `INNER JOIN` descartam peças com cadastro ausente.
+- Conferência: **18.408 peças**, Σ metros 1.328.342,55, Σ peso 335.934,4908 — igual à canônica
+  **e** à `DBProDash.vwSaldoTecidosEstoqueDetalhado` (criptada, 18.408 linhas).
+
 Validação D: para amostras (mês corrente + 12 meses), KPIs do Neon **iguais** aos do `DBProDash`
 (divergência < 0.01); para estoque, 10 pedidos reais com mesma sugestão de rolos. Só então os
 endpoints voltam a ser confiáveis.
@@ -337,7 +349,7 @@ warehouse local completo; legado desligado sem perda de tela.
       (`Fat_Pedido`: 12.746 linhas × 215 colunas em ~17s, contagem idêntica ao ERP).
 - [x] Implementar ETL incremental + `etl.watermark` (local); bootstrap das 37 fontes concluído e conferido.
 - [ ] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D) — **faturamento, contas pagas,
-      financeiro programado, estornos e devoluções prontos (148/148)**; falta estoque em aberto,
+      financeiro programado, estornos, devoluções e estoque em aberto prontos (156/156)**; falta
       sugestão de rolos e custos/centro de custo.
 - [ ] Endpoints + auth + PDF (Fase E); **sync on-demand dos KPIs p/ Neon**; testar contrato contra legado.
 - [ ] Cutover (Fase F) e documentação final.

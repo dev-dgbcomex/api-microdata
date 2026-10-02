@@ -344,6 +344,41 @@ def validar_devolucoes(meses: int) -> Relatorio:
     return rel
 
 
+def validar_estoque() -> Relatorio:
+    """core.estoque_pecas_em_aberto x VW_CTE_PECA_EM_ABERTO / vwSaldoTecidosEstoqueDetalhado."""
+    print("\n== estoque em aberto (VW_CTE_PECA_EM_ABERTO) ==")
+    rel = Relatorio()
+
+    legado = erp.query(
+        "select count(*) as qtd, sum(Metros) as metros, sum(Peso) as peso, "
+        "min(Data_Entrada) as menor, max(Data_Entrada) as maior from VW_CTE_PECA_EM_ABERTO"
+    )[0]
+    with warehouse.engine().connect() as conn:
+        meu = conn.execute(
+            text(
+                "select count(*) as qtd, sum(metros) as metros, sum(peso) as peso, "
+                "min(data_entrada) as menor, max(data_entrada) as maior "
+                "from core.estoque_pecas_em_aberto"
+            )
+        ).mappings().one()
+
+    rel.conferir("pecas em aberto", int(meu["qtd"]), int(legado["qtd"]))
+    rel.conferir("sum(metros)", _dec(meu["metros"]), _dec(legado["metros"]))
+    rel.conferir("sum(peso)", _dec(meu["peso"]), _dec(legado["peso"]))
+    rel.conferir("entrada menor", str(meu["menor"]), str(legado["menor"]))
+    rel.conferir("entrada maior", str(meu["maior"]), str(legado["maior"]))
+
+    dash = erp.query(
+        "select count(*) as qtd, sum(Metros) as metros, sum(Peso_Liquido) as peso "
+        "from DBProDash.dbo.vwSaldoTecidosEstoqueDetalhado"
+    )[0]
+    rel.conferir("dashboard: pecas", int(meu["qtd"]), int(dash["qtd"]))
+    rel.conferir("dashboard: metros", _dec(meu["metros"]), _dec(dash["metros"]))
+    rel.conferir("dashboard: peso", _dec(meu["peso"]), _dec(dash["peso"]))
+
+    return rel
+
+
 VALIDADORES = {
     "faturamento": validar_faturamento,
     "faturamento_diario": validar_faturamento_diario,
@@ -351,6 +386,7 @@ VALIDADORES = {
     "financeiro": validar_financeiro,
     "estornos": validar_estornos,
     "devolucoes": validar_devolucoes,
+    "estoque": validar_estoque,
 }
 
 
@@ -373,6 +409,8 @@ def main(argv: list[str] | None = None) -> int:
             relatorio = validar_faturamento_diario(args.dias)
         elif alvo == "financeiro":
             relatorio = validar_financeiro()
+        elif alvo == "estoque":
+            relatorio = validar_estoque()
         else:
             relatorio = VALIDADORES[alvo](args.meses)
         comparacoes += relatorio.total
