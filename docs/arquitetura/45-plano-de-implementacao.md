@@ -251,6 +251,28 @@ Portar as regras (da Doc 44 §2.2 e Estudos 12/29/30/31):
   32.663 itens, `Σ Vr_Total` R$ 133.792.323,99, `Σ Acres_Desc` −R$ 424.768,28, e os 13 meses +
   45 dias de faturamento/desconto. Cobre o critério de aceite D para esta fatia.
 
+**Financeiro, estornos e devoluções: portados e validados (02/out/2026).** Revs `0007` e `0008`:
+
+| Objeto | Regra portada | Conferência no `DBProDash` |
+|--------|---------------|----------------------------|
+| `core.pag_titulo_aberto` | `VW_Pag_Titulo_Aberto` (canônica legível): `NFE_Parcelas` LEFT JOIN baixas agrupadas por parcela `HAVING Σ líquido < valor` | 129 títulos / R$ 3.873.033,09 |
+| `core.rec_duplicatas_em_aberto` | `VW_Rec_DuplicatasEmAberto` (canônica legível) | 1.019 duplicatas / R$ 3.956.192,84 |
+| `marts.contas_pagas_diario`/`mensal` | `vwContasPagas` = `Pag_Baixas` sem filtro (8.652 baixas, Σ R$ 111.713.506,49) | igual em 13 meses |
+| `marts.financeiro_{pagar,receber}_programado` | espelhos `vwFinanceiro*` (empresas `13`/`14`); a janela `vencimento >= 1º do mês seguinte e <= 2050-12-31` fica na API | títulos, valor e extremos de vencimento |
+| `core.estornos_itens` + `marts.estornos_{diario,mensal}` | `vwListagemDeEstornos`: `Tipo_Pedido='4'`, `Flag_Emitido='1'`, `Empresa='13'`, `Base_Calc<>'-'`, natureza `1.102`/`2.102` seq 1 | 44 itens / 24 pedidos / R$ 287.994,78, 18 meses |
+| `core.devolucoes_documentos` + `marts.devolucoes_{diario,mensal}` | `uspDevolucao`: `Vr_Contabil` das naturalezas `1.201-1`, `1.201-2`, `1.202-1`, `2.202-1`, por `Data_Entrada`/`Data_Saida` | 293 documentos / R$ 2.480.456,50, 54 meses |
+
+- `vwFinanceiroContasPagar/Receber` = canônicas **sem filtro além das empresas 13/14** (122+7 e
+  1017+2): o "programado" é a janela de vencimento aplicada pela procedure, não pela view.
+- **Armadilha das devoluções:** `Liv_Entradas`/`Liv_Saidas` têm `Documento` **reaproveitado por
+  fornecedores diferentes**. Sem `Tipo_Fornec`+`Fornecedor` na chave natural, a junção com
+  `Liv_*NatOp` duplica linhas e troca valores entre meses (3 meses divergiam).
+- Três fontes novas entraram no registry (`Liv_SaiNatOp`, `Liv_EntNatOp`, `Liv_Natureza`; 14.283
+  linhas) porque `Vr_CONtabil` vive nas tabelas de natureza, não nos itens.
+- Validação (`python -m scripts.validar_fase_d`): **148/148 comparações iguais** ao `DBProDash`
+  (13 meses + 45 dias, nas 6 fatias: faturamento, faturamento diário, contas pagas, financeiro,
+  estornos e devoluções).
+
 Validação D: para amostras (mês corrente + 12 meses), KPIs do Neon **iguais** aos do `DBProDash`
 (divergência < 0.01); para estoque, 10 pedidos reais com mesma sugestão de rolos. Só então os
 endpoints voltam a ser confiáveis.
@@ -309,12 +331,14 @@ warehouse local completo; legado desligado sem perda de tela.
 - [x] Neon `dgbcomex` criado e **`public` migrado** (118 tabelas) via `npm run db:migrate:all` no repo dgbcomex.
 - [x] Seed do dgbcomex executado no Neon (4 usuários demo + menus).
 - [x] **Postgres local** nativo instalado (PG 17, `localhost:5432`) e database `dgbcomex_warehouse` criado.
-- [ ] Fase B: criar `app/` com pyproject + venv + deps; `.env` com `DATABASE_URL` (Neon) e `DATABASE_URL_LOCAL`.
+- [x] Fase B: criar `app/` com pyproject + venv + deps; `.env` com `DATABASE_URL` (Neon) e `DATABASE_URL_LOCAL`.
 - [x] Alembic: migrations 0001–0004 no **Postgres local** + schemas próprios no Neon (Fase B).
 - [x] Módulo `db/erp.py` (conexão read-only) + prova de conceito de extract de 1 domínio
       (`Fat_Pedido`: 12.746 linhas × 215 colunas em ~17s, contagem idêntica ao ERP).
 - [x] Implementar ETL incremental + `etl.watermark` (local); bootstrap das 37 fontes concluído e conferido.
-- [ ] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D).
+- [ ] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D) — **faturamento, contas pagas,
+      financeiro programado, estornos e devoluções prontos (148/148)**; falta estoque em aberto,
+      sugestão de rolos e custos/centro de custo.
 - [ ] Endpoints + auth + PDF (Fase E); **sync on-demand dos KPIs p/ Neon**; testar contrato contra legado.
 - [ ] Cutover (Fase F) e documentação final.
 

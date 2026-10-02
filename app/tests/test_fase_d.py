@@ -24,6 +24,8 @@ def carregar_migration(nome: str):
 
 migration_core = carregar_migration("0005_core_faturamento")
 migration_marts = carregar_migration("0006_marts_faturamento")
+migration_financeiro = carregar_migration("0007_core_financeiro")
+migration_estornos = carregar_migration("0008_marts_estornos")
 
 
 class TestWhitelistCFOP:
@@ -63,6 +65,62 @@ class TestViewFaturamento:
         assert "AS faturamento" in diario
         assert "date_trunc('month', data_nota)::date" in (
             migration_marts.VIEW_FATURAMENTO_MENSAL
+        )
+
+
+class TestContasPagasETitulosEmAberto:
+    def test_mart_de_baixas_usa_pag_baixas(self):
+        ddl = migration_financeiro.VIEW_CONTAS_PAGAS_DIARIO
+        assert "FROM raw.pag_baixas" in ddl
+        assert "sum(coalesce(valor_pago, 0))           AS valor_pago" in ddl
+        assert "date_trunc('month', data_baixa)::date" in (
+            migration_financeiro.VIEW_CONTAS_PAGAS_MENSAL
+        )
+
+    def test_titulo_em_aberto_exige_saldo_positivo(self):
+        ddl = migration_financeiro.VIEW_PAG_TITULO_ABERTO
+        assert "coalesce(b.valor_baixas, 0) < coalesce(p.valor, 0)" in ddl
+        assert "FROM raw.nfe_parcelas p" in ddl
+        assert "JOIN raw.nf_entradas nf" in ddl
+
+    def test_duplicata_em_aberto_agrupa_as_baixas_por_parcela(self):
+        ddl = migration_financeiro.VIEW_REC_DUPLICATAS_ABERTO
+        assert "FROM raw.rec_baixas" in ddl
+        assert "GROUP BY empresa, documento, serie, parcela" in ddl
+        assert "coalesce(np.valor_parcelas, 0) - coalesce(rb.valor_liquido, 0) > 0" in ddl
+
+    def test_programados_ficam_prescritos_as_empresas_do_faturamento(self):
+        """A janela de vencimento (1o dia do mes seguinte ate 2050-12-31) e da API."""
+        for ddl in (
+            migration_financeiro.VIEW_PAGAR_PROGRAMADO,
+            migration_financeiro.VIEW_RECEBER_PROGRAMADO,
+        ):
+            assert "core.empresa_faturamento" in ddl
+
+
+class TestEstornosEDevolucoes:
+    def test_estorno_filtra_tipo_4_natureza_de_estorno_e_empresa_13(self):
+        ddl = migration_estornos.VIEW_ESTORNOS_ITENS
+        assert "tp.flag_emitido = '1'" in ddl
+        assert "tp.tipo_pedido = '4'" in ddl
+        assert "tp.empresa = '13'" in ddl
+        assert "i.base_calc <> '-'" in ddl
+        assert "btrim(np.nat_op) || np.seq IN ('1.1021', '2.1021')" in ddl
+
+    def test_devolucoes_usa_a_chave_com_fornecedor(self):
+        """O mesmo numero de documento e reaproveitado por fornecedores diferentes."""
+        ddl = migration_estornos.VIEW_DEVOLUCOES
+        assert "e.tipo_fornec = n.tipo_fornec" in ddl
+        assert "e.fornecedor = n.fornecedor" in ddl
+        assert (
+            "IN ('1.201-1', '1.201-2', '1.202-1', '2.202-1')" in ddl
+        ), "CFOPs de devolucao do uspDevolucao"
+
+    def test_marts_agrupam_por_mes_e_por_dia(self):
+        assert "date_trunc('month', emissao)::date" in migration_estornos.VIEW_ESTORNOS_MENSAL
+        assert "date_trunc('month', data)::date" in migration_estornos.VIEW_DEVOLUCOES_MENSAL
+        assert "emissao::date                           AS data" in (
+            migration_estornos.VIEW_ESTORNOS_DIARIO
         )
 
 

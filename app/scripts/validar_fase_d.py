@@ -162,9 +162,195 @@ def validar_faturamento_diario(dias: int) -> Relatorio:
     return rel
 
 
+def validar_contas_pagas(meses: int) -> Relatorio:
+    """marts.contas_pagas_diario/mensal x DBProDash.dbo.vwContasPagas."""
+    print("\n== contas pagas (vwContasPagas) ==")
+    rel = Relatorio()
+
+    legado = erp.query(
+        "select count(*) as qtd, sum(valorPago) as pago, "
+        "sum(valorPago - valorPago) as zero from DBProDash.dbo.vwContasPagas"
+    )[0]
+
+    with warehouse.engine().connect() as conn:
+        meu = conn.execute(
+            text(
+                "select count(*) as qtd, sum(valor_pago) as pago from raw.pag_baixas"
+            )
+        ).mappings().one()
+
+    rel.conferir("baixas", int(meu["qtd"]), int(legado["qtd"]))
+    rel.conferir("sum(valor_pago)", _dec(meu["pago"]), _dec(legado["pago"]))
+
+    for inicio, fim in meses_recentes(meses):
+        legado_mes = erp.query(
+            "select count(*) as qtd, sum(valorPago) as pago "
+            "from DBProDash.dbo.vwContasPagas where Data_Baixa >= ? and Data_Baixa < ?",
+            (inicio, fim),
+        )[0]
+        with warehouse.engine().connect() as conn:
+            meu_mes = conn.execute(
+                text(
+                    "select baixas, valor_pago from marts.contas_pagas_mensal where mes = :inicio"
+                ),
+                {"inicio": inicio},
+            ).mappings().one_or_none()
+
+        rotulo = f"{inicio:%Y-%m}"
+        if meu_mes is None:
+            rel.conferir(f"{rotulo} sem linhas", 0, int(legado_mes["qtd"]))
+            continue
+        rel.conferir(f"{rotulo} baixas", int(meu_mes["baixas"]), int(legado_mes["qtd"]))
+        rel.conferir(f"{rotulo} valor pago", _dec(meu_mes["valor_pago"]), _dec(legado_mes["pago"]))
+
+    return rel
+
+
+def validar_financeiro() -> Relatorio:
+    """marts.financeiro_*_programado x DBProDash.dbo.vwFinanceiro*."""
+    print("\n== financeiro em aberto (vwFinanceiroContasPagar/Receber) ==")
+    rel = Relatorio()
+
+    for rotulo, view, mart, coluna in (
+        (
+            "pagar",
+            "DBProDash.dbo.vwFinanceiroContasPagar",
+            "marts.financeiro_pagar_programado",
+            "valor_total",
+        ),
+        (
+            "receber",
+            "DBProDash.dbo.vwFinanceiroContasReceber",
+            "marts.financeiro_receber_programado",
+            "valor_total",
+        ),
+    ):
+        legado = erp.query(
+            f"select count(*) as qtd, sum(ValorTotal) as valor, min(Vencimento) as menor, "
+            f"max(Vencimento) as maior from {view}"
+        )[0]
+        with warehouse.engine().connect() as conn:
+            meu = conn.execute(
+                text(f"select count(*) as qtd, sum({coluna}) as valor, "
+                     f"min(vencimento) as menor, max(vencimento) as maior from {mart}")
+            ).mappings().one()
+
+        rel.conferir(f"{rotulo} titulos", int(meu["qtd"]), int(legado["qtd"]))
+        rel.conferir(f"{rotulo} valor", _dec(meu["valor"]), _dec(legado["valor"]))
+        rel.conferir(
+            f"{rotulo} vencimento menor",
+            str(meu["menor"]),
+            str(legado["menor"]),
+        )
+        rel.conferir(
+            f"{rotulo} vencimento maior",
+            str(meu["maior"]),
+            str(legado["maior"]),
+        )
+
+    return rel
+
+
+def validar_estornos(meses: int) -> Relatorio:
+    """marts.estornos_* x DBProDash.dbo.vwListagemDeEstornos (KPI de uspEstorno)."""
+    print("\n== estornos (vwListagemDeEstornos) ==")
+    rel = Relatorio()
+
+    legado = erp.query(
+        "select count(*) as qtd, count(distinct Pedido) as pedidos, sum(Vr_Nota) as valor "
+        "from DBProDash.dbo.vwListagemDeEstornos"
+    )[0]
+    with warehouse.engine().connect() as conn:
+        meu = conn.execute(
+            text(
+                "select count(*) as qtd, count(distinct pedido) as pedidos, "
+                "sum(vr_nota) as valor from core.estornos_itens"
+            )
+        ).mappings().one()
+
+    rel.conferir("itens", int(meu["qtd"]), int(legado["qtd"]))
+    rel.conferir("pedidos", int(meu["pedidos"]), int(legado["pedidos"]))
+    rel.conferir("sum(vr_nota)", _dec(meu["valor"]), _dec(legado["valor"]))
+
+    for inicio, fim in meses_recentes(meses):
+        legado_mes = erp.query(
+            "select count(*) as qtd, sum(Vr_Nota) as valor "
+            "from DBProDash.dbo.vwListagemDeEstornos "
+            "where Data_Emissao >= ? and Data_Emissao < ?",
+            (inicio, fim),
+        )[0]
+        with warehouse.engine().connect() as conn:
+            meu_mes = conn.execute(
+                text("select itens, valor_nota from marts.estornos_mensal where mes = :inicio"),
+                {"inicio": inicio},
+            ).mappings().one_or_none()
+
+        rotulo = f"{inicio:%Y-%m}"
+        if meu_mes is None:
+            rel.conferir(f"{rotulo} sem linhas", 0, int(legado_mes["qtd"]))
+            continue
+        rel.conferir(f"{rotulo} itens", int(meu_mes["itens"]), int(legado_mes["qtd"]))
+        rel.conferir(f"{rotulo} valor", _dec(meu_mes["valor_nota"]), _dec(legado_mes["valor"]))
+
+    return rel
+
+
+def validar_devolucoes(meses: int) -> Relatorio:
+    """marts.devolucoes_* x DBProDash.dbo.vwListagemDeEntradasSaidasPorCFOP (uspDevolucao)."""
+    print("\n== devolucoes (vwListagemDeEntradasSaidasPorCFOP) ==")
+    rel = Relatorio()
+
+    legado = erp.query(
+        "select count(*) as qtd, sum(Vr_CONtabil) as valor "
+        "from DBProDash.dbo.vwListagemDeEntradasSaidasPorCFOP "
+        "where Nova_CFOP in ('1.201-1', '1.201-2', '1.202-1', '2.202-1')"
+    )[0]
+    with warehouse.engine().connect() as conn:
+        meu = conn.execute(
+            text(
+                "select count(*) as qtd, sum(vr_contabil) as valor from core.devolucoes_documentos"
+            )
+        ).mappings().one()
+
+    rel.conferir("documentos", int(meu["qtd"]), int(legado["qtd"]))
+    rel.conferir("sum(vr_contabil)", _dec(meu["valor"]), _dec(legado["valor"]))
+
+    for inicio, fim in meses_recentes(meses):
+        legado_mes = erp.query(
+            "select count(*) as qtd, sum(Vr_CONtabil) as valor "
+            "from DBProDash.dbo.vwListagemDeEntradasSaidasPorCFOP "
+            "where Nova_CFOP in ('1.201-1', '1.201-2', '1.202-1', '2.202-1') "
+            "and Data >= ? and Data < ?",
+            (inicio, fim),
+        )[0]
+        with warehouse.engine().connect() as conn:
+            meu_mes = conn.execute(
+                text(
+                    "select documentos, valor from marts.devolucoes_mensal "
+                    "where mes = :inicio and tipo = 'E'"
+                ),
+                {"inicio": inicio},
+            ).mappings().one_or_none()
+
+        rotulo = f"{inicio:%Y-%m}"
+        if meu_mes is None:
+            rel.conferir(f"{rotulo} sem linhas", 0, int(legado_mes["qtd"]))
+            continue
+        rel.conferir(
+            f"{rotulo} documentos", int(meu_mes["documentos"]), int(legado_mes["qtd"])
+        )
+        rel.conferir(f"{rotulo} valor", _dec(meu_mes["valor"]), _dec(legado_mes["valor"]))
+
+    return rel
+
+
 VALIDADORES = {
     "faturamento": validar_faturamento,
     "faturamento_diario": validar_faturamento_diario,
+    "contas_pagas": validar_contas_pagas,
+    "financeiro": validar_financeiro,
+    "estornos": validar_estornos,
+    "devolucoes": validar_devolucoes,
 }
 
 
@@ -185,8 +371,10 @@ def main(argv: list[str] | None = None) -> int:
     for alvo in alvos:
         if alvo == "faturamento_diario":
             relatorio = validar_faturamento_diario(args.dias)
+        elif alvo == "financeiro":
+            relatorio = validar_financeiro()
         else:
-            relatorio = validar_faturamento(args.meses)
+            relatorio = VALIDADORES[alvo](args.meses)
         comparacoes += relatorio.total
         falhas += relatorio.falhas
 
