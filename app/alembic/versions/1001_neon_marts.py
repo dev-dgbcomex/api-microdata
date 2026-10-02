@@ -14,7 +14,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 
 revision: str = "1001_neon_marts"
 down_revision: str | None = "0004_marts"
@@ -48,7 +47,12 @@ def upgrade() -> None:
             sa.Column("motivo", sa.Text(), nullable=False),
             sa.Column("linhas", sa.Integer()),
             sa.Column("ultima_exec_etl", sa.TIMESTAMP(timezone=True)),
-            sa.Column("publicado_em", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column(
+                "publicado_em",
+                sa.TIMESTAMP(timezone=True),
+                nullable=False,
+                server_default=sa.func.now(),
+            ),
             schema="etl",
         ).create(conn, checkfirst=True)
 

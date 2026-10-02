@@ -234,6 +234,23 @@ Portar as regras (da Doc 44 §2.2 e Estudos 12/29/30/31):
 | `core.financeiro_receber/pagar_programado` | `vwFinanceiroContasReceber/Pagar` → vencimento > fim do mês anterior |
 | `marts` KPI-final | Faturamento, Desconto, Devolução, Estorno, Receber/Pagar programado, Custos admin + razão |
 
+**Faturamento: portado e validado (02/out/2026).** `core.faturamento_itens` (rev `0005`) +
+`marts.faturamento_diario`/`faturamento_mensal` (rev `0006`) reproduzem `vwFaturamento`:
+
+- `vwFaturamento`, `vwContasPagas`, `vwListagemDeEstornos`, `vwFinanceiro*` e todas as `usp*` do
+  dashboard estão com **`WITH ENCRYPTION`** (`OBJECT_DEFINITION(...) IS NULL`): dá para consultar,
+  **não dá para ler o SQL**. A regra foi reconstituída pelos Estudos 11/12/29 + pela view irmã
+  legível `DBMicrodata.dbo.Vw_Fat_Saida_Qlik`.
+- **Whitelist de CFOP**: 104 pares `(NatOp, Seq)` em `core.cfop_faturamento`. Base = a whitelist da
+  `Vw_Fat_Saida_Qlik` (106 pares) **menos `5.911/1` e `6.901/1`**, que a `vwFaturamento` não usa —
+  diferença descoberta comparando item a item (174 itens / R$ 64.554,73).
+- Regra: `Fat_Pedido ⋈ Fat_Itens_Pedido ⋈ Clientes_Principal ⋈ Fat_Nat_Pedido`, com
+  `Flag_Emitido='1'`, `Tipo_Pedido='1'`, empresas `13/14` (`core.empresa_faturamento`),
+  `Base_Calc <> '-'`, whitelist de CFOP; `Metros = CASE Base_Calc WHEN 'P'/'M' THEN Metros ELSE Qtde`.
+- Validação (`python -m scripts.validar_fase_d`): **74/74 comparações iguais** ao `DBProDash` —
+  32.663 itens, `Σ Vr_Total` R$ 133.792.323,99, `Σ Acres_Desc` −R$ 424.768,28, e os 13 meses +
+  45 dias de faturamento/desconto. Cobre o critério de aceite D para esta fatia.
+
 Validação D: para amostras (mês corrente + 12 meses), KPIs do Neon **iguais** aos do `DBProDash`
 (divergência < 0.01); para estoque, 10 pedidos reais com mesma sugestão de rolos. Só então os
 endpoints voltam a ser confiáveis.

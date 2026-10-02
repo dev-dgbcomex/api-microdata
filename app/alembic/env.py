@@ -3,8 +3,6 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
-
 from src.config import get_settings
 from src.db.postgres import create_pg_engine
 

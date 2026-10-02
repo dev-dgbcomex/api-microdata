@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0001_etl"
@@ -46,13 +47,21 @@ def upgrade() -> None:
         sa.Column("tabela", sa.Text(), nullable=False),
         sa.Column("tipo", sa.Text(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False),
-        sa.Column("inicio", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "inicio",
+            sa.TIMESTAMP(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
         sa.Column("fim", sa.TIMESTAMP(timezone=True)),
         sa.Column("linhas", sa.BigInteger()),
         sa.Column("duracao_s", sa.Numeric(12, 3)),
         sa.Column("mensagem", sa.Text()),
         sa.Column("host", sa.Text()),
-        sa.CheckConstraint(f"tipo in ({', '.join(repr(t) for t in TIPOS)})", name="ck_execucoes_tipo"),
+        sa.CheckConstraint(
+            f"tipo in ({', '.join(repr(t) for t in TIPOS)})",
+            name="ck_execucoes_tipo",
+        ),
         sa.CheckConstraint(
             f"status in ({', '.join(repr(s) for s in STATUS)})", name="ck_execucoes_status"
         ),
@@ -72,7 +81,12 @@ def upgrade() -> None:
         sa.Column("tabela", sa.Text()),
         sa.Column("mensagem", sa.Text(), nullable=False),
         sa.Column("detalhe", sa.Text()),
-        sa.Column("criado_em", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "criado_em",
+            sa.TIMESTAMP(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
         schema="etl",
     )
 
@@ -87,9 +101,15 @@ def upgrade() -> None:
         sa.Column("pai", sa.Text()),
         sa.Column("ativo", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("doc", sa.Text()),
-        sa.Column("atualizado_em", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "atualizado_em",
+            sa.TIMESTAMP(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
         sa.CheckConstraint(
-            f"estrategia in ({', '.join(repr(e) for e in ESTRATEGIAS)})", name="ck_fontes_estrategia"
+            f"estrategia in ({', '.join(repr(e) for e in ESTRATEGIAS)})",
+            name="ck_fontes_estrategia",
         ),
         schema="etl",
     )
@@ -100,7 +120,12 @@ def upgrade() -> None:
         sa.Column("tabela_raw", sa.Text(), nullable=False),
         sa.Column("hash_ddl", sa.Text()),
         sa.Column("colunas", sa.Integer()),
-        sa.Column("aplicado_em", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "aplicado_em",
+            sa.TIMESTAMP(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
         schema="etl",
     )
 
