@@ -6,7 +6,12 @@ from src.etl import sources
 from src.etl.extract import introspect, reader
 from src.etl.extract.introspect import ColunaERP, ColunaPG
 from src.etl.load.upsert import _upsert_sql
-from src.etl.transform.naming import identificar, snake_case
+from src.etl.transform.naming import (
+    identificar,
+    partes_sql_server,
+    qualificar_sql_server,
+    snake_case,
+)
 
 
 def coluna(nome: str, tipo: str, **extra) -> ColunaERP:
@@ -32,6 +37,26 @@ def test_identificador_sem_aspas():
     assert identificar("carga_em") == "carga_em"
     assert identificar("ordem de compra") == '"ordem de compra"'
     assert identificar('tabela"injetada') == '"tabela""injetada"'
+
+
+def test_nome_qualificado_aceita_banco_do_servidor():
+    assert qualificar_sql_server("Car_Cores") == "[Car_Cores]"
+    assert qualificar_sql_server("dbo.X") == "[dbo].[X]"
+    assert qualificar_sql_server("DBProDash.dbo.Rel_CCusto_Niveis") == (
+        "[DBProDash].[dbo].[Rel_CCusto_Niveis]"
+    )
+
+
+def test_partes_separam_banco_esquema_e_objeto():
+    assert partes_sql_server("Car_Cores") == (None, "dbo", "Car_Cores")
+    assert partes_sql_server("dbo.X") == (None, "dbo", "X")
+    assert partes_sql_server("DBProDash.dbo.X") == ("DBProDash", "dbo", "X")
+
+
+def test_leitura_monta_paginacao_com_banco():
+    sql, params = reader._base("DBProDash.dbo.X", ["A"], None, None, 10)
+    assert sql == "select top 10 [A] from [DBProDash].[dbo].[X] "
+    assert params == []
 
 
 def test_colunas_duplicadas_recebem_sufixo():

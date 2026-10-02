@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts.validar_fase_d import meses_recentes
+from src.etl import sources
 
 VERSOES = Path(__file__).resolve().parents[1] / "alembic" / "versions"
 
@@ -28,6 +29,7 @@ migration_financeiro = carregar_migration("0007_core_financeiro")
 migration_estornos = carregar_migration("0008_marts_estornos")
 migration_estoque = carregar_migration("0009_core_estoque")
 migration_sugestao = carregar_migration("0010_core_sugestao_rolos")
+migration_custos = carregar_migration("0011_marts_custos")
 
 
 class TestWhitelistCFOP:
@@ -193,6 +195,59 @@ class TestSugestaoDeRolos:
             "core.estoque_rolos_disponiveis",
         ):
             assert f"DROP VIEW IF EXISTS {view}" in codigo, view
+
+
+class TestCustosPorDepartamento:
+    def test_core_mirror_da_rel_ccusto_niveis(self):
+        ddl = migration_custos.VIEW_CUSTO_BAIXAS
+        assert "FROM raw.rel_ccusto_niveis b" in ddl
+        assert "coalesce(b.valor_baixado, 0)    AS valor_baixado" in ddl
+
+    def test_codigos_no_formato_do_dashboard(self):
+        """`vwContasPagasCentroCusto` expoe Codigo_Despesa/Codigo_Departamento com ponto."""
+        ddl = migration_custos.VIEW_CUSTO_BAIXAS
+        assert "concat_ws('.', b.cod_desp1, b.cod_desp2, b.cod_desp3)" in ddl
+        assert "concat_ws('.', b.cod_dpto1, b.cod_dpto2, b.cod_dpto3, b.cod_dpto4)" in ddl
+
+    def test_mart_agrupa_por_mes_codigos_e_soma_baixado(self):
+        ddl = migration_custos.VIEW_CUSTOS_DEPARTAMENTO
+        assert "date_trunc('month', c.data_baixa)::date  AS mes" in ddl
+        assert "c.codigo_departamento," in ddl
+        assert "c.codigo_despesa," in ddl
+        assert "sum(c.valor_baixado)                     AS valor_baixado" in ddl
+
+    def test_administrativo_usa_os_departamentos_do_legado(self):
+        ddl = migration_custos.VIEW_CUSTOS_ADMINISTRATIVO
+        assert "c.codigo_departamento IN ('1.1.1.1', '1.1.1.2')" in ddl
+
+    def test_rollback_derruba_as_tres_views(self):
+        import inspect
+
+        codigo = inspect.getsource(migration_custos.downgrade)
+        for view in (
+            "marts.custos_administrativo_mensal",
+            "marts.custos_por_departamento_mensal",
+            "core.custo_baixas",
+        ):
+            assert f"DROP VIEW IF EXISTS {view}" in codigo, view
+
+
+class TestFontesDeOutroBanco:
+    def test_rel_ccusto_niveis_usa_o_snapshot_do_dbprodash(self):
+        fonte = sources.por_tabela("DBProDash.dbo.Rel_CCusto_Niveis")
+        assert fonte.destino == "rel_ccusto_niveis"
+        assert "sp_PagRel_CCusto_Niveis" in fonte.doc
+        assert fonte.estrategia == "full"
+
+    def test_chave_inclui_o_fornecedor_para_nao_colapsar_linhas(self):
+        """So sem `CodFornecedor` a chave repete em 8 grupos (1842 -> 1834)."""
+        chave = sources.por_tabela("DBProDash.dbo.Rel_CCusto_Niveis").chave_natural
+        assert "CodFornecedor" in chave
+        assert len(chave) == len(set(chave))
+
+    def test_views_derivadas_do_centro_de_custo(self):
+        assert "DBProDash.dbo.vwContasPagasCentroCusto" in sources.DERIVADAS
+        assert "DBProDash.dbo.vwContasPagasCentroCustoMensal" in sources.DERIVADAS
 
 
 class TestJanelasDeMes:

@@ -8,6 +8,7 @@ from typing import Any
 
 from src.config import get_settings
 from src.db import erp
+from src.etl.transform.naming import qualificar_sql_server
 
 
 def _base(
@@ -23,9 +24,10 @@ def _base(
     if coluna_watermark and desde is not None:
         condicoes = f"where [{coluna_watermark}] > ?"
         params.append(desde if isinstance(desde, (date, datetime)) else desde)
+    destino = qualificar_sql_server(tabela_erp)
     if limite is not None:
-        return f"select top {int(limite)} {lista} from [{tabela_erp}] {condicoes}", params
-    return f"select {lista} from [{tabela_erp}] {condicoes}", params
+        return f"select top {int(limite)} {lista} from {destino} {condicoes}", params
+    return f"select {lista} from {destino} {condicoes}", params
 
 
 def extrair(

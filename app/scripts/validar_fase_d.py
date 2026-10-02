@@ -490,6 +490,103 @@ def validar_sugestao_rolos() -> Relatorio:
     return rel
 
 
+SQL_CUSTOS_DEPARTAMENTO = """
+select datefromparts(year(Data_Baixa), month(Data_Baixa), 1) as mes,
+       Codigo_Departamento, Codigo_Despesa,
+       count(*) as parcelas, sum(Valor_Baixado) as valor_baixado
+from DBProDash.dbo.vwContasPagasCentroCusto
+where Data_Baixa is not null
+group by datefromparts(year(Data_Baixa), month(Data_Baixa), 1),
+         Codigo_Departamento, Codigo_Despesa
+"""
+
+SQL_CUSTOS_ADMINISTRATIVO = """
+select datefromparts(year(Data_Baixa), month(Data_Baixa), 1) as mes,
+       count(*) as parcelas, sum(Valor_Baixado) as valor_baixado
+from DBProDash.dbo.vwContasPagasCentroCusto
+where Data_Baixa is not null and Codigo_Departamento in ('1.1.1.1', '1.1.1.2')
+group by datefromparts(year(Data_Baixa), month(Data_Baixa), 1)
+"""
+
+
+def validar_custos() -> Relatorio:
+    """marts.custos_* x DBProDash.vwContasPagasCentroCusto (espelho de Rel_CCusto_Niveis)."""
+    print("\n== custos por departamento (vwContasPagasCentroCusto) ==")
+    rel = Relatorio()
+
+    legado = {_chave_custos(linha): linha for linha in erp.query(SQL_CUSTOS_DEPARTAMENTO)}
+    with warehouse.engine().connect() as conn:
+        meu = {
+            _chave_custos(linha): linha
+            for linha in conn.execute(
+                text(
+                    "select mes, codigo_departamento, codigo_despesa, parcelas, valor_baixado "
+                    "from marts.custos_por_departamento_mensal"
+                )
+            ).mappings()
+        }
+    rel.conferir("combinacoes mes/depto/despesa", len(meu), len(legado))
+    for chave in sorted(set(legado) | set(meu)):
+        esperado, obtido = legado.get(chave), meu.get(chave)
+        if esperado is None or obtido is None:
+            rel.conferir(f"grupo {chave} presente", obtido is not None, esperado is not None)
+            continue
+        rel.conferir(
+            f"{chave} parcelas",
+            int(_valor(obtido, "parcelas")),
+            int(_valor(esperado, "parcelas")),
+        )
+        rel.conferir(
+            f"{chave} valor",
+            _dec(_valor(obtido, "valor_baixado")),
+            _dec(_valor(esperado, "valor_baixado")),
+        )
+
+    admin_legado = {_chave_mes(linha): linha for linha in erp.query(SQL_CUSTOS_ADMINISTRATIVO)}
+    with warehouse.engine().connect() as conn:
+        admin_meu = {
+            _chave_mes(linha): linha
+            for linha in conn.execute(
+                text(
+                    "select mes, parcelas, valor_baixado from marts.custos_administrativo_mensal"
+                )
+            ).mappings()
+        }
+    rel.conferir("meses administrativos", len(admin_meu), len(admin_legado))
+    for chave in sorted(set(admin_legado) | set(admin_meu)):
+        esperado, obtido = admin_legado.get(chave), admin_meu.get(chave)
+        if esperado is None or obtido is None:
+            rel.conferir(
+                f"administrativo {chave} presente", obtido is not None, esperado is not None
+            )
+            continue
+        rel.conferir(
+            f"administrativo {chave} parcelas",
+            int(_valor(obtido, "parcelas")),
+            int(_valor(esperado, "parcelas")),
+        )
+        rel.conferir(
+            f"administrativo {chave} valor",
+            _dec(_valor(obtido, "valor_baixado")),
+            _dec(_valor(esperado, "valor_baixado")),
+        )
+
+    return rel
+
+
+def _chave_mes(linha: object) -> str:
+    valor = _valor(linha, "mes")
+    return valor.strftime("%Y-%m") if hasattr(valor, "strftime") else str(valor)[:7]
+
+
+def _chave_custos(linha: object) -> str:
+    """`mes/Codigo_Departamento/Codigo_Despesa`: o grupo do mart de custos."""
+    return (
+        f"{_chave_mes(linha)}/{_valor(linha, 'codigo_departamento')}"
+        f"/{_valor(linha, 'codigo_despesa')}"
+    )
+
+
 VALIDADORES = {
     "faturamento": validar_faturamento,
     "faturamento_diario": validar_faturamento_diario,
@@ -499,6 +596,7 @@ VALIDADORES = {
     "devolucoes": validar_devolucoes,
     "estoque": validar_estoque,
     "sugestao_rolos": validar_sugestao_rolos,
+    "custos": validar_custos,
 }
 
 
@@ -525,6 +623,8 @@ def main(argv: list[str] | None = None) -> int:
             relatorio = validar_estoque()
         elif alvo == "sugestao_rolos":
             relatorio = validar_sugestao_rolos()
+        elif alvo == "custos":
+            relatorio = validar_custos()
         else:
             relatorio = VALIDADORES[alvo](args.meses)
         comparacoes += relatorio.total

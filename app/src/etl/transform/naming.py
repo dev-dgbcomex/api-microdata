@@ -146,3 +146,21 @@ def identificar(nome: str) -> str:
     if SEGURO_PG.match(nome) and nome not in RESERVADOS:
         return nome
     return '"' + nome.replace('"', '""') + '"'
+
+
+def partes_sql_server(nome: str) -> tuple[str | None, str, str]:
+    """`banco.esquema.objeto` -> (banco, esquema, objeto); sem banco, `None` e `dbo`.
+
+    Fontes de outro banco (`DBProDash`, o BI) entram no ETL pela mesma rota das demais.
+    """
+    partes = nome.split(".")
+    if len(partes) >= 3:
+        return partes[0], partes[1], partes[2]
+    if len(partes) == 2:
+        return None, partes[0], partes[1]
+    return None, "dbo", partes[0]
+
+
+def qualificar_sql_server(nome: str) -> str:
+    """`DBProDash.dbo.X` -> `[DBProDash].[dbo].[X]`; `X` -> `[X]`."""
+    return ".".join(f"[{parte.replace(']', ']]')}]" for parte in nome.split("."))

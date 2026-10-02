@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from src.etl.transform.naming import snake_case
+from src.etl.transform.naming import partes_sql_server, snake_case
 
 Estrategia = Literal["full", "watermark", "recarrega_pai", "reconciliacao"]
 
@@ -31,7 +31,10 @@ class Fonte:
 
     @property
     def destino(self) -> str:
-        return self.tabela_raw or snake_case(self.tabela_erp)
+        if self.tabela_raw:
+            return self.tabela_raw
+        # `DBProDash.dbo.X` vira `x`: o espelho raw fica no schema `raw` do warehouse.
+        return snake_case(partes_sql_server(self.tabela_erp)[2])
 
     def colunas_chave_pai(self) -> tuple[str, ...]:
         """Chave do pai vista nas colunas deste filho (usada na recarga por pai)."""
@@ -308,6 +311,30 @@ FONTES: tuple[Fonte, ...] = (
         doc="Est. 36",
     ),
     Fonte(
+        dominio="custos",
+        tabela_erp="DBProDash.dbo.Rel_CCusto_Niveis",
+        chave_natural=(
+            "Empresa",
+            "Documento",
+            "Parcela",
+            "Data_Baixa",
+            "CodDesp1",
+            "CodDesp2",
+            "CodDesp3",
+            "CodDpto1",
+            "CodDpto2",
+            "CodDpto3",
+            "CodDpto4",
+            "CodFornecedor",
+        ),
+        estrategia="full",
+        linhas_erp=1842,
+        tabela_raw="rel_ccusto_niveis",
+        doc="Est. 12 §3/§4 (rateio de custo por niveis; snapshot materializado pelo "
+        "sp_PagRel_CCusto_Niveis no DBProDash - unica fonte do rateio pronta; as procs "
+        "uspRel_CCusto_Niveis* fazem TRUNCATE+INSERT e nao sao portadas)",
+    ),
+    Fonte(
         dominio="contas_receber",
         tabela_erp="Notas_Fiscais_Rec",
         chave_natural=("Nr_Empresa_NF", "Nr_Documento_NF", "Serie"),
@@ -509,6 +536,8 @@ FONTES: tuple[Fonte, ...] = (
 DERIVADAS: tuple[str, ...] = (
     "Vw_Car_Itens_Pedido",
     "VW_CTE_PECA_EM_ABERTO",
+    "DBProDash.dbo.vwContasPagasCentroCusto",
+    "DBProDash.dbo.vwContasPagasCentroCustoMensal",
 )
 
 ORDEM_CARGA: tuple[str, ...] = (

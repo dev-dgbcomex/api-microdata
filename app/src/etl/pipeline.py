@@ -138,8 +138,10 @@ def carregar(
 
 def _maximo_watermark(fonte: Fonte) -> Any:
     from src.db import erp
+    from src.etl.transform.naming import qualificar_sql_server
 
-    return erp.scalar(f"select max([{fonte.coluna_watermark}]) from [{fonte.tabela_erp}]")
+    destino = qualificar_sql_server(fonte.tabela_erp)
+    return erp.scalar(f"select max([{fonte.coluna_watermark}]) from {destino}")
 
 
 def conferer(engine: Engine, fonte: Fonte) -> tuple[int | None, int | None]:

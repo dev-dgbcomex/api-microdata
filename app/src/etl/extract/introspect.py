@@ -14,7 +14,12 @@ from sqlalchemy import Engine, text
 from src.db import erp
 from src.etl import sources
 from src.etl.sources import Fonte
-from src.etl.transform.naming import identificar, snake_case
+from src.etl.transform.naming import (
+    identificar,
+    partes_sql_server,
+    qualificar_sql_server,
+    snake_case,
+)
 
 COLUNA_CARGA = "_carga_em"
 
@@ -31,22 +36,22 @@ select
     case when t.is_user_defined = 1 then t.max_length else c.max_length end as base_max_length,
     case when t.is_user_defined = 1 then t.precision else c.precision end as base_precision,
     case when t.is_user_defined = 1 then t.scale else c.scale end as base_scale
-from sys.columns c
-join sys.types t on t.user_type_id = c.user_type_id
-left join sys.types bt on t.is_user_defined = 1 and bt.user_type_id = t.system_type_id
+from {banco}sys.columns c
+join {banco}sys.types t on t.user_type_id = c.user_type_id
+left join {banco}sys.types bt on t.is_user_defined = 1 and bt.user_type_id = t.system_type_id
 where c.object_id = object_id(?)
 order by c.column_id
 """
 
 SQL_TABELA_EXISTE = """
 select o.name, o.type_desc
-from sys.objects o
+from {banco}sys.objects o
 where o.name = ? and o.type in ('U', 'V')
 """
 
 SQL_LINHAS = """
 select sum(p.rows) as linhas
-from sys.partitions p
+from {banco}sys.partitions p
 where p.object_id = object_id(?) and p.index_id in (0, 1)
 """
 
@@ -116,7 +121,13 @@ TEXTO_BASE = {"char", "nchar", "varchar", "nvarchar", "sysname", "text", "ntext"
 
 
 def _ident(tabela: str) -> str:
-    return "[" + tabela.replace("]", "]]") + "]"
+    return qualificar_sql_server(tabela)
+
+
+def _catalogo(tabela: str) -> str:
+    """`sys.` do banco da fonte (vazio = banco da conexão)."""
+    banco, _, _ = partes_sql_server(tabela)
+    return f"[{banco}]." if banco else ""
 
 
 def perfilar_textos(
@@ -170,9 +181,11 @@ def _tamanho_em_caracteres(tipo: str, tamanho: int | None) -> int | None:
 
 
 def colunas_erp(tabela_erp: str) -> list[ColunaERP]:
-    if not erp.scalar(SQL_TABELA_EXISTE, (tabela_erp,)):
+    _, _, objeto = partes_sql_server(tabela_erp)
+    catalogo = _catalogo(tabela_erp)
+    if not erp.scalar(SQL_TABELA_EXISTE.format(banco=catalogo), (objeto,)):
         raise LookupError(f"tabela/view ausente no ERP: {tabela_erp}")
-    linhas = erp.query(SQL_COLUNAS, (tabela_erp,))
+    linhas = erp.query(SQL_COLUNAS.format(banco=catalogo), (qualificar_sql_server(tabela_erp),))
     colunas: list[ColunaERP] = []
     for row in linhas:
         tipo = str(row["type_name"])
@@ -192,7 +205,10 @@ def colunas_erp(tabela_erp: str) -> list[ColunaERP]:
 
 def linhas_erp(tabela_erp: str) -> int | None:
     """Contagem real: views não têm linhas em sys.partitions (cai para COUNT)."""
-    valor = erp.scalar(SQL_LINHAS, (tabela_erp,))
+    valor = erp.scalar(
+        SQL_LINHAS.format(banco=_catalogo(tabela_erp)),
+        (qualificar_sql_server(tabela_erp),),
+    )
     if valor is not None:
         return int(valor)
     total = erp.scalar(f"select count_big(*) from {_ident(tabela_erp)}")
@@ -241,7 +257,7 @@ def criar_tabela_sql(fonte: Fonte, colunas: list[ColunaPG], chave: list[str]) ->
     )
     ddl.append(
         f"COMMENT ON TABLE raw.{destino} IS "
-        f"'Espelho de dbo.{_texto(fonte.tabela_erp)} ({_texto(fonte.doc)})'"
+        f"'Espelho de {_texto(fonte.tabela_erp)} ({_texto(fonte.doc)})'"
     )
     return ddl
 

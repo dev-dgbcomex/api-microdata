@@ -119,11 +119,19 @@ Views-espelho triviais (só recortam empresas `13/14`) das canônicas do `DBMicr
    **escreve** no banco; a nova API read-only não deve. `Rel_CCusto_Niveis` (1 842 linhas, 42
    colunas: `CodDesp1..3`, `CodDpto1..4`, `Valor_Baixado`, `Data_Baixa`, `MesAno`, `Referente`…)
    é um **snapshot** — fica com os dados da última execução da proc.
+   **Portado (02/out/2026, rev `0011`):** a tabela virou fonte do ETL
+   (`DBProDash.dbo.Rel_CCusto_Niveis` → `raw.rel_ccusto_niveis`, 1 842/1 842) e a regra virou
+   `core.custo_baixas` + `marts.custos_por_departamento_mensal` +
+   `marts.custos_administrativo_mensal` — opção A daqui. A chave natural exige `CodFornecedor`
+   (sem ele 8 grupos repetem e a carga perde 8 linhas). As colunas `Tot*` são totais de janela do
+   legado: nunca somar.
 2. **`uspCustoAdministrativoArmazenagemPorFaturamento` está quebrada:** filtra por
    `Codigo_Custo`, coluna que **não existe** em `vwContasPagasCentroCusto` (que expõe
    `Codigo_Despesa`/`Codigo_Departamento`). Provável resíduo de refatoração.
 3. **`vwContasPagasCentroCusto` e `vwContasPagasCentroCustoMensal` são idênticas** (ambas leem
-   `Rel_CCusto_Niveis` sem filtro); o recorte mensal/anual é feito nas procs.
+   `Rel_CCusto_Niveis` sem filtro); o recorte mensal/anual é feito nas procs. As duas expõem só
+   **7 colunas** (`Codigo_Despesa`, `Codigo_Departamento`, `Valor_Baixado`, `Data_Baixa`,
+   `MesAno`, `Referente`, `Razao_Nome_Cliente`) — o rateio por nível vive na tabela, não na view.
 4. **Escalas diferentes:** custo **anual** divide por 12; **mensal** não. Validar se é o desejado.
 5. **"Programado"** usa o 1º dia do **mês seguinte** ao corrente como início — ou seja, exclui o
    mês corrente e olha o futuro até 2050. Receber usa `COUNT(QtdeDoc)`, pagar `COUNT(DISTINCT)`.
@@ -142,6 +150,9 @@ Views-espelho triviais (só recortam empresas `13/14`) das canônicas do `DBMicr
   `sp_PagRel_CCusto_Niveis` como consulta (trabalho alto: 40 KB de T-SQL).
   **Recomendação:** começar por **A** (rápido, dados já prontos) e planejar **B** se for preciso
   tempo-real.
+  **Feito (02/out/2026):** A, como fonte do ETL — o espelho `raw` é a carga idempotente, lida do
+  mesmo banco pelo mesmo pipeline (`qualificar_sql_server` monta `[DBProDash].[dbo].[X]`).
+  B continua disponível se aparecer exigência de tempo real.
 - Expor as constantes de negócio em configuração: **whitelist de CFOP** do faturamento,
   **CFOPs de devolução**, departamentos/despesas de custo (`1.1.1.1`…, `2.3.1`), empresas
   (`13`,`14`) e o parâmetro `obs_ipi`.

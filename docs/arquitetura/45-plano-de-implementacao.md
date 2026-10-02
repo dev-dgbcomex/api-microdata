@@ -113,7 +113,7 @@ próprios no Neon (`public` intocado); `/health` responde lendo o local; ETL con
 
 ### 3.3 Decisões tomadas na Fase B (verificadas no ERP em 02/out/2026)
 
-1. **`raw` é gerado do catálogo do ERP, não escrito à mão.** As 45 fontes do registry somam ~2.400 colunas;
+1. **`raw` é gerado do catálogo do ERP, não escrito à mão.** As 46 fontes do registry somam ~2.400 colunas;
    `python -m src.cli introspect --apply` lê `sys.columns`/`sys.types` e cria as tabelas com
    nomes snake_case, tipos traduzidos e `COMMENT ON` citando a coluna de origem. Novas colunas no
    ERP entram por `ALTER TABLE ... ADD COLUMN` (aditivo, sem dropar). `--recriar` recria o schema
@@ -228,7 +228,7 @@ Portar as regras (da Doc 44 §2.2 e Estudos 12/29/30/31):
 | `core.pedido_sugestao_rolos` | janela `SUM(Metros) OVER (gaveta, tear DESC, rolo DESC)` até `Qtde_Saldo` (Vw_Car_Itens_Pedido) |
 | `marts.faturamento_diario` | `vwFaturamento` → `SUM(Vr_Total)+SUM(Acres_Desc)` por `Data_Nota` (QMP `Base_Calc` P/M) |
 | `marts.contas_pagas_diario` | `vwContasPagas` → baixas por `Data_Baixa` (**sem filtro** de empresa/tipo) |
-| `marts.custos_por_departamento_mensal` | relatório de centro de custo/departamento (hoje `Rel_CCusto_Niveis` + `vwContasPagasCentroCusto*`) |
+| `marts.custos_por_departamento_mensal` | `vwContasPagasCentroCusto` → Σ `Valor_Baixado` por mês × `Codigo_Departamento` × `Codigo_Despesa` |
 | `marts.devolucoes_diario` | `vwListagemDeEntradasSaidasPorCFOP` com CFOP de devolução (1.201/1.156/1.202/2.202) |
 | `marts.estornos_diario` | `vwListagemDeEstornos` → `SUM(Vr_Nota)` por `Data_Emissao` |
 | `core.financeiro_receber/pagar_programado` | `vwFinanceiroContasReceber/Pagar` → vencimento > fim do mês anterior |
@@ -307,9 +307,28 @@ do `DBProDash` é criptografada, mas a **procedure irmã legível** na base can�
   `core.estoque_rolos_disponiveis` = **18.384 peças em 98 combinações** (≠ 18.408 do estoque em
   aberto: aqui o `Nro_Rolo_Origem` e a `Situacao` entram no antijoin).
 
-**Estado da Fase D (02/out/2026):** 7 de 8 fatias portadas — falta só
-`marts.custos_por_departamento_mensal` (`Rel_CCusto_Niveis` + `vwContasPagasCentroCusto*`).
-`python -m scripts.validar_fase_d` fecha em **727/727** comparações iguais ao `DBProDash`.
+**Custos por centro de custo: portado e validado (02/out/2026).** Rev `0011`. É o único objeto do
+dashboard que é **tabela**, não view: `Rel_CCusto_Niveis` (1.842 linhas, 42 colunas) é o snapshot que
+`sp_PagRel_CCusto_Niveis` materializa com `TRUNCATE + INSERT`.
+
+- Segue a **opção A** do Estudo 12 §5 (rápida e sem reimplementar 40 KB de T-SQL): a tabela entra
+  como fonte do ETL (`DBProDash.dbo.Rel_CCusto_Niveis` → `raw.rel_ccusto_niveis`, 1.842/1.842
+  conferidas) e as regras viram views. As procs que escrevem não são portadas.
+- `core.custo_baixas` (documento/parcela × despesa × departamento) +
+  `marts.custos_por_departamento_mensal` (mês × `Codigo_Departamento` × `Codigo_Despesa`) +
+  `marts.custos_administrativo_mensal` (departamentos `1.1.1.1`/`1.1.1.2`, base do
+  `Porc_Administrativo` de `uspCustoAdmArmFat`).
+- A chave natural precisa de `CodFornecedor`: sem ela 8 grupos se repetem e a carga perde 8 linhas
+  (1.842 → 1.834).
+- Colunas `Tot*` da tabela são totais de janela do legado — nunca somar; o mart usa `Valor_Baixado`.
+- `vwContasPagasCentroCusto` expõe só 7 colunas (`Codigo_Despesa`, `Codigo_Departamento`,
+  `Valor_Baixado`, `Data_Baixa`, `MesAno`, `Referente`, `Razao_Nome_Cliente`), então o mart agrupa
+  pelos **códigos com ponto**, como o dashboard.
+- Validação: **1038/1038** (518 grupos mês/despesa/departamento + 16 meses administrativos).
+
+**Estado da Fase D (02/out/2026): 8 de 8 fatias portadas.** `python -m scripts.validar_fase_d` fecha
+em **1765/1765** comparações iguais ao `DBProDash`; `pytest` 54 testes; `ruff` limpo. Registry com
+46 fontes (45 do ERP canônico + `DBProDash.dbo.Rel_CCusto_Niveis`).
 
 Validação D: para amostras (mês corrente + 12 meses), KPIs do Neon **iguais** aos do `DBProDash`
 (divergência < 0.01); para estoque, 10 pedidos reais com mesma sugestão de rolos. Só então os
@@ -374,10 +393,10 @@ warehouse local completo; legado desligado sem perda de tela.
 - [x] Módulo `db/erp.py` (conexão read-only) + prova de conceito de extract de 1 domínio
       (`Fat_Pedido`: 12.746 linhas × 215 colunas em ~17s, contagem idêntica ao ERP).
 - [x] Implementar ETL incremental + `etl.watermark` (local); bootstrap conferido (37 fontes
-      iniciais + 8 acrescentadas na Fase D = 45 no registry).
-- [ ] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D) — **faturamento, contas pagas,
-      financeiro programado, estornos, devoluções, estoque em aberto e sugestão de rolos prontos
-      (727/727)**; falta só custos/centro de custo.
+      iniciais + 9 acrescentadas na Fase D = 46 no registry).
+- [x] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D) — **8/8 fatias prontas**:
+      faturamento, contas pagas, financeiro programado, estornos, devoluções, estoque em aberto,
+      sugestão de rolos e custos/centro de custo (**1765/1765** comparações iguais ao `DBProDash`).
 - [ ] Endpoints + auth + PDF (Fase E); **sync on-demand dos KPIs p/ Neon**; testar contrato contra legado.
 - [ ] Cutover (Fase F) e documentação final.
 
