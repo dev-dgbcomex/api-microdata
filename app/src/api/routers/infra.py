@@ -36,6 +36,7 @@ def health(response: Response) -> dict[str, Any]:
         }
     )
     etl = _safely(lambda: _ultima_execucao())
+    publicacao = _safely(lambda: _status_publicacao())
     ok = bool(local.get("ok")) and bool(remoto.get("ok"))
     if not ok:
         response.status_code = 503
@@ -47,6 +48,29 @@ def health(response: Response) -> dict[str, Any]:
         "neon": remoto,
         "erp": erp_status,
         "etl": etl,
+        "neon_publicacao": publicacao,
+    }
+
+
+def _status_publicacao() -> dict[str, Any]:
+    """Se os agregados do Neon estao defasados em relacao ao warehouse local (D4)."""
+    from src.etl import publicar
+
+    settings = get_settings()
+    versao = publicar.versao_local()
+    defasados, _ = publicar.defasados(publicar.MARTS_DO_DASHBOARD)
+    return {
+        "ok": True,
+        "automatico": settings.neon_publicar_automatico,
+        "versao_warehouse": versao,
+        "defasados": defasados,
+        "publicados": {
+            nome: {
+                "linhas": registro.get("linhas"),
+                "publicado_em": registro.get("publicado_em"),
+            }
+            for nome, registro in publicar.publicados().items()
+        },
     }
 
 

@@ -101,9 +101,18 @@ request; datas no padrão `DDMMYYYY` convertidas para `DD/MM/YYYY` (`formatar_da
 | `marts.estornos_diario` | dia | 11, 14 | sim (KPI agregado) |
 | `marts.financeiro_receber_programado` / `marts.financeiro_pagar_programado` | título a vencer | 12, 13, 14 | sim (resumo) |
 
-Camadas (no Postgres local): `raw` (fontes), `core` (regras), `marts` (consumo) e `etl` (controle).
-No **Neon** só sobem os agregados marcados como "sim", em objetos próprios da API (nunca em
-`public`). Detalhes e convenções no [Doc 43](./43-arquitetura-alvo-api.md) e no
+Camadas (no Postgres local): `raw` (fontes), `core` (regra), `marts` (consumo) e `etl` (controle).
+
+
+**Sync on-demand (D4, entregue 05/out/2026).** Os agregados marcados como "sim" sobem para o Neon em tabelas de mesmo nome/coluna (`marts.*`, migration `1003`), publicadas por `src/etl/publicar.py`:
+
+- **Quando**: na chamada de `/dashboard-completo`, e só se defasado. A versão do warehouse é `max(fim)` das execuções `ok` (`etl.execucoes`); o Neon guarda `publicado_em` em `etl.marts_publicados`. Conservative de propósito: qualquer carga nova republica os 7 marts (4.880 linhas, ~2s).
+- **Atomicidade**: `delete` + `insert` na mesma transação — o front nunca lê mart pela metade.
+- **Best-effort**: falha de sync **não** derruba a rota; o KPI continua saindo do warehouse local. Desligável com `NEON_PUBLICAR_AUTOMATICO=false` (padrão) e publicável na mão com `python -m src.cli publicar-neon [--mart X] [--forcar] [--status]`.
+- **O que não sobe**: `core.estoque_pecas_em_aberto` e `core.pedido_sugestao_rolos` (grão de peça/linha de pedido).
+- **Estado visível** em `GET /health` → `neon_publicacao` (defasados + publicados).
+
+Detalhes e convenções no [Doc 43](./43-arquitetura-alvo-api.md) e no
 [Estudo 22](../estudo/22-arquitetura-neon-etl.md).
 
 ---

@@ -21,6 +21,7 @@ from sqlalchemy import text
 
 from src.api.auth.dependencias import exigir_autenticado
 from src.db import warehouse
+from src.etl import publicar
 
 router = APIRouter(tags=["kpis"], dependencies=[Depends(exigir_autenticado)])
 
@@ -246,11 +247,17 @@ def custos_administrativos_mensal(data: date | None = None) -> dict[str, Any]:
 
 @router.get("/dashboard-completo/{data}")
 def dashboard_completo(data: date) -> dict[str, Any]:
-    """Orquestração do legado (#4 a #13 em 10 `EXEC`); aqui uma leitura por KPI.
+    """Orquestra�ao do legado (#4 a #13 em 10 `EXEC`); aqui uma leitura por KPI.
 
-    Faturamento/descontos/devoluções/estornos/contas pagas usam o mês de `data`; os custos e os
-    programados são sempre relativos a hoje, como nas procedures (que não recebem data).
+    Faturamento/descontos/devolu�oes/estornos/contas pagas usam o m�s de `data`; os custos e os
+    programados sao sempre relativos a hoje, como nas procedures (que nao recebem data).
+
+    E aqui que o **sync on-demand** acontece (D4): antes de responder, os agregados pequenos que o
+    front le no Neon sao republicados **se** o warehouse carregou depois da ultima publicacao.
+    Desligado por `NEON_PUBLICAR_AUTOMATICO=false` (padrao) e best-effort: se o sync falhar, a
+    resposta do KPI sai igual, lendo o warehouse local.
     """
+    publicar.sincronizar_antes_do_dashboard()
     return {
         "data_consulta": data.isoformat(),
         "faturamento": faturamento(data),

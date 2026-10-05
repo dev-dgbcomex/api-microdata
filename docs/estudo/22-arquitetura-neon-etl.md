@@ -104,6 +104,13 @@ Inventário/peças (`vwInventarioDePecas`, `vwSaidaPecas`), Fiscal
    `Liv_SaiProd`/`Liv_EntProd` (itens sem data), `CTE_Itens_RomTransf`, `Ret_Aviso_ItensRecebimento`.
 7. **Controle de carga** (tabela no Neon): tabela, watermark, última execução, status, linhas,
    erro — permite retomar e auditar.
+8. **Publicação dos agregados no Neon** (Fase E/D4, entregue 05/out/2026): os marts pequenos (4.880 linhas em 7 tabelas) são copiados do warehouse para `marts.*` no Neon por `src/etl/publicar.py`.
+   - **Gatilho**: a chamada de `/dashboard-completo`; **só** se defasado — a versão do warehouse é `max(fim)` das execuções `ok` em `etl.execucoes` e o Neon guarda `publicado_em` em `etl.marts_publicados`.
+   - **Atomicidade**: `delete` + `insert` na mesma transação, para o front nunca ler o mart pela metade.
+   - **Best-effort**: erro de publicação não derruba a rota (o KPI sai do warehouse local); `NEON_PUBLICAR_AUTOMATICO=false` desliga, `python -m src.cli publicar-neon` publica à mão.
+   - **Não sobe**: `core.estoque_pecas_em_aberto` e `core.pedido_sugestao_rolos` (grão de peça/linha de pedido).
+   - **Medido**: 7 marts / 4.880 linhas em ~2s; número de março/2026 no Neon (`1920624,92`) idêntico ao da API.
+
 
 ## 5. Mapa de chaves e watermarks (levantado)
 
@@ -212,8 +219,15 @@ dinâmico — **reimplementar em Python**.
 
 ## 10. Próximos passos
 
-1. Definir o **schema `raw`** mínimo (tabelas + colunas) a partir de §5/§3.
-2. Implementar o **extractor** (paginado por watermark) e o **upsert** no Neon.
-3. Portar as views do `DBProDash` para `core`/`marts` (validar números contra o on-prem).
-4. Criar a tabela de **controle de carga** e a rotina de **reconciliação** (full periódico).
-5. Só então expor os **endpoints** da API lendo do Neon.
+> Situação em 05/out/2026: itens 1–5 **feitos** (raw local + `core`/`marts` validados 2220/2220,
+> 14 rotas + auth na Fase E, publicação on-demand no Neon). O que sobra:
+
+1. **D6**: filtrar as queries pela `empresa` do token (o token já a carrega) e por papel.
+2. **Corte**: apontar o `dgbcomex` para `marts.*`/`etl.marts_publicados` e descomissionar o
+   `DBProDash` (depende de #1 para não expor KPI de outra empresa).
+3. **Runner do ETL** em VM on-prem: hoje o warehouse é carregado da máquina de desenvolvimento
+   (D3), e a publicação no Neon depende de alguém chamar `/dashboard-completo`.
+4. **Otimizar `recarrega_pai`**: os filhos sem data (`Liv_SaiProd`/`Liv_EntProd`,
+   `CTE_Itens_RomTransf`) são recarregados por documento-pai inteiro.
+5. **Fontes que não sobem**: confirmar com o negócio se `*_PBI`/`*_Qlik` do ERP entram como marts
+   no Neon ou se o dashboard pode só com os agregados de `core`/`marts`.

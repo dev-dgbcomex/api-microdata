@@ -12,7 +12,7 @@ from typing import Any
 from src.config import get_settings
 from src.db import erp, neon, warehouse
 from src.db.postgres import ping
-from src.etl import bootstrap, pipeline, sources
+from src.etl import bootstrap, pipeline, publicar, sources
 from src.etl.extract import introspect, reader
 from src.etl.transform.naming import snake_case
 
@@ -339,6 +339,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--listar", action="store_true", help="so lista os usuarios cadastrados"
     )
     p_usuario.set_defaults(func=cmd_usuario)
+
+    p_publicar = sub.add_parser(
+        "publicar-neon",
+        help="publica os agregados pequenos (marts) do warehouse no Neon",
+    )
+    p_publicar.add_argument(
+        "--mart",
+        action="append",
+        choices=sorted(publicar.COLUNAS),
+        help="repete para varios; padrao e todos os do dashboard",
+    )
+    p_publicar.add_argument(
+        "--forcar",
+        action="store_true",
+        help="publica mesmo sem defasagem detectada",
+    )
+    p_publicar.add_argument(
+        "--status", action="store_true", help="so mostra o que esta publicado no Neon"
+    )
+    p_publicar.set_defaults(func=cmd_publicar)
     return parser
 
 
@@ -382,6 +402,34 @@ def cmd_usuario(args: argparse.Namespace) -> int:
     print(f"usuario {usuario.id} <{usuario.email}> papeis={usuario.papeis}")
     if not args.senha:
         print(f"senha gerada (mostrada uma vez): {senha}")
+    return 0
+
+
+def cmd_publicar(args: argparse.Namespace) -> int:
+    mod = publicar
+
+    if args.status:
+        atuais = mod.publicados()
+        if not atuais:
+            print("nenhum mart publicado no Neon")
+            return 0
+        print(f"{'mart':<34} {'linhas':>7}  publicado_em")
+        for nome, registro in sorted(atuais.items()):
+            linhas = registro.get("linhas")
+            print(
+                f"{nome:<34} {linhas if linhas is not None else '-':>7}  "
+                f"{registro.get('publicado_em')}"
+            )
+        return 0
+
+    marts = tuple(args.mart) if args.mart else mod.MARTS_DO_DASHBOARD
+    resultado = mod.sincronizar(marts, forcar=args.forcar)
+    if not resultado.publicados:
+        print(f"nada a publicar ({len(resultado.ignorados)} mart(s) em dia no Neon)")
+        return 0
+    print(f"publicados no Neon: {', '.join(resultado.publicados)} ({resultado.linhas} linhas)")
+    if resultado.ignorados:
+        print(f"em dia: {', '.join(resultado.ignorados)}")
     return 0
 
 

@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     etl_batch_size: int = 5000
     etl_timezone: str = TZ
 
+    neon_publicar_automatico: bool = False
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
