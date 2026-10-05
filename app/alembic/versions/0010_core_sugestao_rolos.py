@@ -20,8 +20,12 @@ Diferencas mecanicas em relacao ao legado:
     o fim. No Postgres o padrao de `DESC` e NULLS FIRST (o oposto), e por isso a ordem precisa
     ser explicita: `tear DESC NULLS LAST`. Sem isso a sugestao comeca pelo rolo errado.
   - A procedure emite uma linha por **item** do pedido (cursor), nao por
-    (Produto, Cor); a view tambem. `Qtde_Item` = MIN(Qtde) quando o mesmo
-    (Produto, Cor) repete no pedido (a procedure usa `TOP 1`, sem ORDER BY).
+    (Produto, Cor); a view tambem. `Qtde_Item` e `TOP 1 Qtde` de todos os itens do mesmo
+    (Pedido, Produto, Cor): sem `ORDER BY`, na pratica a procedure devolve o primeiro item
+    (menor `Item`), e e isso que a view reproduz com `first_value`.
+  - Item com saldo e **sem rolo disponivel** continua saindo, com `Sublote`/`Gavetas`/`Rolos`/
+    `Total_Metros` nulos e `Qtde_Pecas = 0`: e o que o cursor da procedure devolve, e o front
+    usa essa linha para avisar que faltam rolos.
 
 Revision ID: 0010_core_sugestao_rolos
 Revises: 0009_core_estoque
@@ -97,8 +101,34 @@ WITH itens AS (
         produto,
         cor,
         qtde,
-        (qtde - coalesce(qtde_romaneio, 0) - coalesce(qtde_acerto, 0)) AS qtde_saldo
+        (qtde - coalesce(qtde_romaneio, 0) - coalesce(qtde_acerto, 0)) AS qtde_saldo,
+        -- a procedure le `TOP 1 Qtde` de todos os itens do mesmo (pedido, produto, cor)
+        first_value(qtde) OVER (
+            PARTITION BY empresa, pedido, produto, cor ORDER BY item
+        )                                          AS qtde_item
     FROM raw.car_itens_pedido
+    WHERE (qtde - coalesce(qtde_romaneio, 0) - coalesce(qtde_acerto, 0)) > 0
+),
+sugestoes AS (
+    SELECT
+        i.empresa,
+        i.pedido,
+        i.item,
+        min(a.sub_lote)                               AS sublote,
+        string_agg(DISTINCT btrim(a.gaveta), ', ' ORDER BY btrim(a.gaveta)) AS gavetas,
+        string_agg(
+            lpad(a.nro_rolo, 10, '0') || lpad(a.nro_peca, 3, '0'),
+            ', ' ORDER BY a.nro_rolo, a.nro_peca
+        )                                             AS rolos,
+        count(*)                                      AS qtde_pecas,
+        sum(a.metros)                                 AS total_metros
+    FROM itens i
+    JOIN core.sugestao_rolos_acumulado a
+        ON a.produto = i.produto
+       AND a.cor = i.cor
+    WHERE a.soma_metros <= i.qtde_saldo
+       OR abs(a.soma_metros - i.qtde_saldo) < 0.01
+    GROUP BY i.empresa, i.pedido, i.item
 )
 SELECT
     i.empresa,
@@ -106,26 +136,18 @@ SELECT
     i.item,
     i.produto,
     i.cor,
-    min(i.qtde)                                   AS qtde_item,
+    i.qtde_item,
     i.qtde_saldo,
-    min(a.sub_lote)                               AS sublote,
-    string_agg(DISTINCT btrim(a.gaveta), ', ' ORDER BY btrim(a.gaveta)) AS gavetas,
-    string_agg(
-        lpad(a.nro_rolo, 10, '0') || lpad(a.nro_peca, 3, '0'),
-        ', ' ORDER BY a.nro_rolo, a.nro_peca
-    )                                             AS rolos,
-    count(*)                                      AS qtde_pecas,
-    sum(a.metros)                                 AS total_metros
+    s.sublote,
+    s.gavetas,
+    s.rolos,
+    coalesce(s.qtde_pecas, 0) AS qtde_pecas,
+    s.total_metros
 FROM itens i
-JOIN core.sugestao_rolos_acumulado a
-    ON a.produto = i.produto
-   AND a.cor = i.cor
-WHERE i.qtde_saldo > 0
-  AND (
-      a.soma_metros <= i.qtde_saldo
-      OR abs(a.soma_metros - i.qtde_saldo) < 0.01
-  )
-GROUP BY i.empresa, i.pedido, i.item, i.produto, i.cor, i.qtde_saldo
+LEFT JOIN sugestoes s
+    ON s.empresa = i.empresa
+   AND s.pedido = i.pedido
+   AND s.item = i.item
 """
 
 

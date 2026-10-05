@@ -107,3 +107,61 @@ def apagar_documentos(
             f"where ({do_pai}) = ({do_vetor})",
             {coluna: [linha[coluna] for linha in valores_pai] for coluna in chave_pai},
         ).rowcount
+
+
+def _sql_apagar_ausentes(
+    tipos: dict[str, str],
+    colunas: Sequence[str],
+    nulos: bool,
+) -> tuple[str, str, str, str]:
+    """(create temp, insert, index, delete) do anti-join por chave natural."""
+    # `is not distinct from` impede o hash anti join e vira nested loop de 300k x 300k; so
+    # usamos `=` quando a chave nao tem nulo (chave natural sempre tem) e o caminho lento so
+    # quando ela tem.
+    operador = "is not distinct from" if nulos else "="
+    assinatura = ", ".join(f"c{i} {tipos[coluna]}" for i, coluna in enumerate(colunas))
+    rotulos = ", ".join(f"c{i}" for i in range(len(colunas)))
+    lista = ", ".join(f"cast(%({coluna})s as {tipos[coluna]}[])" for coluna in colunas)
+    igual = " and ".join(f"v.c{i} {operador} t.{coluna}" for i, coluna in enumerate(colunas))
+    return (
+        f"create temp table chaves_vistas ({assinatura}) on commit drop",
+        f"insert into chaves_vistas ({rotulos}) select * from unnest({lista}) as v({rotulos})",
+        f"create index ix_chaves_vistas on chaves_vistas ({rotulos})",
+        f"delete from raw.TABELA t where not exists "
+        f"(select 1 from chaves_vistas v where {igual})",
+    )
+
+
+def apagar_ausentes(
+    engine: Engine,
+    tabela_raw: str,
+    chave: Sequence[str],
+    presentes: Sequence[Sequence[Any]],
+) -> int:
+    """Apaga de `raw` as linhas cuja chave natural nao veio do ERP nesta carga.
+
+    Sem isso, um documento **excluido** no ERP sobrevive ao `upsert` e contamina os marts
+    (o pedido `013290` foi excluido no ERP mas continuava no `raw`).
+    """
+    tipos = tipos_de(engine, tabela_raw)
+    colunas = [coluna for coluna in chave if coluna in tipos and _SEGURO.match(tipos[coluna])]
+    if len(colunas) != len(chave):
+        return 0
+    nulos = any(any(linha[i] is None for linha in presentes) for i in range(len(colunas)))
+    criar, inserir, indexar, apagar = _sql_apagar_ausentes(tipos, colunas, nulos)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(criar)
+        if presentes:
+            lote = max(get_settings().etl_batch_size, 1)
+            for inicio in range(0, len(presentes), lote):
+                bloco = presentes[inicio : inicio + lote]
+                conn.exec_driver_sql(
+                    inserir,
+                    {
+                        coluna: [linha[i] for linha in bloco]
+                        for i, coluna in enumerate(colunas)
+                    },
+                )
+            conn.exec_driver_sql(indexar)
+            conn.exec_driver_sql("analyze chaves_vistas")
+        return conn.exec_driver_sql(apagar.replace("TABELA", tabela_raw)).rowcount

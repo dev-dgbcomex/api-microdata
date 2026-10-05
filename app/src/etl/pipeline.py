@@ -39,6 +39,9 @@ def _plano(fonte: Fonte) -> tuple[list[str], list[str], list[str], list[str]]:
     return colunas_erp, [mapa[coluna] for coluna in colunas_erp], chave_pg, meta_erp
 
 
+LIMITE_CHAVES_RECONCILIAVEIS = 400_000
+
+
 def carregar(
     engine: Engine,
     fonte: Fonte,
@@ -47,6 +50,7 @@ def carregar(
     incremental: bool = False,
     recarrega_pai: bool = True,
     gravar_watermark: bool = True,
+    reconciliar: bool = True,
     progresso=None,
 ) -> Resultado:
     colunas_erp, colunas_raw, chave_pg, meta_erp = _plano(fonte)
@@ -64,6 +68,11 @@ def carregar(
     por_pai = fonte.estrategia == "recarrega_pai" and bool(fonte.pai) and recarrega_pai
     chave_pai = [snake_case(coluna) for coluna in fonte.colunas_chave_pai()] if por_pai else []
     pais_apagados: set[tuple[Any, ...]] = set()
+
+    # Somente carga completa sabe dizer o que **sumiu** do ERP; incremental e carga parcial nao.
+    chaves_vistas: list[tuple[Any, ...]] | None = (
+        [] if reconciliar and desde is None and limite is None and chave_pg else None
+    )
 
     total = 0
     substituidas = 0
@@ -99,12 +108,20 @@ def carregar(
                 pais_apagados.update(grupo)
                 if novos:
                     substituidas += upsert.apagar_documentos(
-                    engine, fonte.destino, chave_pai, novos
-                )
+                        engine, fonte.destino, chave_pai, novos
+                    )
                     documentos += len(novos)
             total += upsert.upsert(engine, fonte.destino, chave_pg, colunas_raw, linhas)
+            if chaves_vistas is not None:
+                chaves_vistas.extend(tuple(linha[c] for c in chave_pg) for linha in linhas)
+                if len(chaves_vistas) > LIMITE_CHAVES_RECONCILIAVEIS:
+                    chaves_vistas = None
             if progresso:
                 progresso(total)
+
+        apagadas = 0
+        if chaves_vistas is not None:
+            apagadas = upsert.apagar_ausentes(engine, fonte.destino, chave_pg, chaves_vistas)
         registro.linhas = total
         registro.mensagem = f"colunas={len(colunas_raw)}"
 
@@ -116,6 +133,8 @@ def carregar(
         documentos=documentos,
         avisos=avisos,
     )
+    if apagadas:
+        resultado.avisos.append(f"{apagadas} linha(s) apagada(s): sumiram no ERP")
 
     if fonte.coluna_watermark and gravar_watermark:
         if limite is not None:

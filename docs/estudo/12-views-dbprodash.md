@@ -98,16 +98,18 @@ Views-espelho triviais (só recortam empresas `13/14`) das canônicas do `DBMicr
 | `uspDevolucao @data` | `Σ(Vr_CONtabil)` onde `Nova_CFOP IN ('1.201-1','1.201-2','1.202-1','2.202-1')` no mês | `Devolucao` |
 | `uspEstorno @data` | `Σ(Vr_Nota)` de `vwListagemDeEstornos` no mês | `Estorno` |
 | `uspListagemBaixasPagar @data` | `Σ(ValorPago)` de `vwContasPagas` no mês | `ContasPagas` |
-| `uspDashFinanceiroContasReceberProgramado` | `COUNT(QtdeDoc), Σ(ValorTotal)` de `vwFinanceiroContasReceber` com `Vencimento >= 1º do mês seguinte` e `<= 2050-12-31` | `QtdeDoc, ValorTotal` |
-| `uspDashFinanceiroContasPagarProgramado` | idem, `COUNT(DISTINCT QtdeDoc)` | `QtdeDoc, ValorTotal` |
+| `uspDashFinanceiroContasReceberProgramado` | `COUNT(QtdeDoc), Σ(ValorTotal)` de `vwFinanceiroContasReceber` com `Vencimento >= 1º do mês corrente` e `<= 2050-12-31` | `QtdeDoc, ValorTotal` |
+| `uspDashFinanceiroContasPagarProgramado` | idem, `COUNT(DISTINCT Documento)` de `vwFinanceiroContasPagar` | `QtdeDoc, ValorTotal` |
 | `uspCustoAdmArmFat` / `..Mensal` | ver 3.1 | `Faturamento, Administrativo, Armazenagem=0, Porc_*` |
 | `uspRel_CCusto_NiveisAnual` / `Mensal` | **materializa** `Rel_CCusto_Niveis` via `sp_PagRel_CCusto_Niveis` (escrita) | — |
 
 ### 3.1 `uspCustoAdmArmFat` (anual e mensal)
 
-- `Faturamento` = (faturamento dos últimos 12 meses)/12 (anual) ou do mês (mensal).
+- `Faturamento` = Σ dos **12 meses fechados** (mês corrente − 12 .. − 1) ÷ 12 (anual) ou do
+  **último mês fechado** (mensal).
 - `Administrativo` = `Σ Valor_Baixado` de `vwContasPagasCentroCusto` onde
-  `Codigo_Departamento IN ('1.1.1.1','1.1.1.2')`.
+  `Codigo_Departamento IN ('1.1.1.1','1.1.1.2')`. Na proc **anual** divide por 12 (acumulado
+  histórico ÷ 12); na **mensal** não divide —quirk medido (02/out/2026).
 - **`Armazenagem` é retornado como `0` fixo** e `Porc_Armazenagem = 0` fixo — não há cálculo de
   armazenagem nessas procs. `Porc_Administrativo = Administrativo / Faturamento`.
 - Retorna também versões string com vírgula (`*_Replace`).
@@ -132,9 +134,12 @@ Views-espelho triviais (só recortam empresas `13/14`) das canônicas do `DBMicr
    `Rel_CCusto_Niveis` sem filtro); o recorte mensal/anual é feito nas procs. As duas expõem só
    **7 colunas** (`Codigo_Despesa`, `Codigo_Departamento`, `Valor_Baixado`, `Data_Baixa`,
    `MesAno`, `Referente`, `Razao_Nome_Cliente`) — o rateio por nível vive na tabela, não na view.
-4. **Escalas diferentes:** custo **anual** divide por 12; **mensal** não. Validar se é o desejado.
-5. **"Programado"** usa o 1º dia do **mês seguinte** ao corrente como início — ou seja, exclui o
-   mês corrente e olha o futuro até 2050. Receber usa `COUNT(QtdeDoc)`, pagar `COUNT(DISTINCT)`.
+4. **Escalas diferentes:** custo **anual** divide o faturamento dos 12 meses fechados por 12 e o
+   administrativo histórico por 12; **mensal** não divide nenhum dos dois (e o faturamento é só do
+   último mês fechado), então o `Porc_Administrativo` mensal passa de 100%. Validar se é o desejado.
+5. **"Programado"** começa no 1º dia do **mês corrente** (`Vencimento >= 1º do mês corrente`, até
+   2050-12-31) — ou seja, inclui os vencidos do próprio mês. Receber usa `COUNT(*)` das linhas,
+   pagar `COUNT(DISTINCT Documento)`. Medido em 02/out/2026 (antes este estudo dizia "mês seguinte").
 6. **`Pag_Baixas.Valor_Pago` × `Valor_Liquido`** (ver 2.4) e `Juros_Pagos` existem — decidir qual
    entra em cada métrica.
 7. `liv_parametros.obs_ipi = 'N'` → o ajuste de IPI das entradas está desligado hoje (manter a

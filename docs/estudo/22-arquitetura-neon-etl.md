@@ -95,6 +95,11 @@ Inventário/peças (`vwInventarioDePecas`, `vwSaidaPecas`), Fiscal
 5. **Exclusões/baixas**: o ERP é read-only; onde não há flag de exclusão, detectar por
    **reconciliação periódica** (full) ou por tabelas de baixa (`CTE_Baixa`, `Rec_Baixas`,
    `Pag_Baixas`). Preferir **soft delete** no Neon.
+   **Implementado (02/out/2026):** toda carga **completa** guarda as chaves naturais vistas numa
+   `temp table` indexada e apaga de `raw` o que não veio do ERP (`upsert.apagar_ausentes`). Sem
+   isso o pedido `013290`, **excluído** no ERP, continuava no `raw` e inflava
+   `marts.faturamento_diario` (`Fat_Itens_Pedido` chegou a ter 15 linhas a mais). Carga
+   incremental e carga parcial (`--limite`) **não** reconciliam: só a completa sabe o que sumiu.
 6. **Filhos sem data**: recarregar por **documento-pai** (delete+insert do documento) — ex.:
    `Liv_SaiProd`/`Liv_EntProd` (itens sem data), `CTE_Itens_RomTransf`, `Ret_Aviso_ItensRecebimento`.
 7. **Controle de carga** (tabela no Neon): tabela, watermark, última execução, status, linhas,

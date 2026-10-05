@@ -349,6 +349,11 @@ pequeno** correspondente, on-demand — nunca o volume bruto do ERP.
 | Agregado | `GET /dashboard-completo/{data}` (alias que lê os marts) |
 | Infra | `GET /health` (sonda Neon + status `etl.watermark`) |
 
+> **Já feito (02/out/2026):** as 13 rotas de negócio + `/health` leem o warehouse local, com
+> `scripts/validar_api.py` comparando cada uma contra a procedure original (**264/264**).
+> `GET /pdf/sugestao-rolos/{pedido}` (reportlab), auth e sync on-demand ao Neon ficam para os
+> próximos passos; `/procedures` e `/test-procedure/{nome}` foram eliminados (porta de fuga).
+
 Entregáveis da fase:
 1. **Auth** (D5/D6): login, JWT curto, `bcrypt`; escopos por rota derivados dos tópicos.
 2. **Schemas Pydantic** idênticos em forma ao legado, porém tipados, `trim`, datas ISO.
@@ -396,8 +401,15 @@ warehouse local completo; legado desligado sem perda de tela.
       iniciais + 9 acrescentadas na Fase D = 46 no registry).
 - [x] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D) — **8/8 fatias prontas**:
       faturamento, contas pagas, financeiro programado, estornos, devoluções, estoque em aberto,
-      sugestão de rolos e custos/centro de custo (**1765/1765** comparações iguais ao `DBProDash`).
-- [ ] Endpoints + auth + PDF (Fase E); **sync on-demand dos KPIs p/ Neon**; testar contrato contra legado.
+      sugestão de rolos e custos/centro de custo (**2198/2198** comparações iguais ao `DBProDash`).
+- [x] Fase E (1/3): **13 rotas de negócio** lendo o warehouse local — `/dados`, `/sugestao-rolos/{pedido}`
+      e os 11 KPIs (incluindo `/dashboard-completo/{data}`), com `/health`; contratos medidos contra as
+      procedures em `scripts/validar_api.py` (**300/300**). `/procedures` e `/test-procedure/{nome}`
+      do legado **não** foram portados (eram `EXEC` arbitrário no ERP).
+- [x] ETL: carga completa agora **reconcilia exclusões** do ERP (`upsert.apagar_ausentes`) — o
+      pedido `013290` (excluído no ERP) sobrevivia no `raw` e inflava o faturamento.
+- [ ] Fase E (2/3): **auth** (D5/D6) e **PDF** de sugestão de rolos (reportlab).
+- [ ] Fase E (3/3): **sync on-demand** dos KPIs p/ Neon.
 - [ ] Cutover (Fase F) e documentação final.
 
 ---

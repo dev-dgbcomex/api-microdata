@@ -1,1 +1,1 @@
-__all__ = ["infra"]
+__all__ = ["estoque", "infra", "kpis"]

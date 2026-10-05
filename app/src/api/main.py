@@ -1,11 +1,11 @@
-"""API FastAPI (Fase B: apenas infra; os contratos do legado chegam na Fase E)."""
+"""API FastAPI (Fase D/E): infra + contratos de negócio sobre o warehouse local."""
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routers import infra
+from src.api.routers import estoque, infra, kpis
 from src.config import get_settings
 
 settings = get_settings()
@@ -27,3 +27,5 @@ app.add_middleware(
 )
 
 app.include_router(infra.router)
+app.include_router(estoque.router)
+app.include_router(kpis.router)

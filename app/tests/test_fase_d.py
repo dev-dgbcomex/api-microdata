@@ -175,15 +175,28 @@ class TestSugestaoDeRolos:
     def test_seleciona_ate_cobrir_o_saldo(self):
         ddl = migration_sugestao.VIEW_SUGESTAO_ROLOS
         assert "(qtde - coalesce(qtde_romaneio, 0) - coalesce(qtde_acerto, 0)) AS qtde_saldo" in ddl
-        assert "i.qtde_saldo > 0" in ddl
+        assert "(qtde - coalesce(qtde_romaneio, 0) - coalesce(qtde_acerto, 0)) > 0" in ddl
         assert "a.soma_metros <= i.qtde_saldo" in ddl
         assert "abs(a.soma_metros - i.qtde_saldo) < 0.01" in ddl
 
     def test_saida_por_item_com_rolos_formatados(self):
         ddl = migration_sugestao.VIEW_SUGESTAO_ROLOS
-        assert "GROUP BY i.empresa, i.pedido, i.item, i.produto, i.cor, i.qtde_saldo" in ddl
+        assert "GROUP BY i.empresa, i.pedido, i.item" in ddl
         assert "lpad(a.nro_rolo, 10, '0') || lpad(a.nro_peca, 3, '0')" in ddl
         assert "ORDER BY a.nro_rolo, a.nro_peca" in ddl
+
+    def test_item_sem_rolo_continua_saindo_como_no_cursor(self):
+        """O legado emite a linha do item sem sugestao (nulos e Qtde_Pecas = 0)."""
+        ddl = migration_sugestao.VIEW_SUGESTAO_ROLOS
+        assert "LEFT JOIN sugestoes s" in ddl
+        assert "coalesce(s.qtde_pecas, 0) AS qtde_pecas" in ddl
+
+    def test_qtde_item_pega_o_primeiro_item_do_grupo(self):
+        """`TOP 1 Qtde` sem ORDER BY devolve o primeiro item do mesmo (Pedido, Produto, Cor)."""
+        ddl = migration_sugestao.VIEW_SUGESTAO_ROLOS
+        assert "first_value(qtde) OVER (" in ddl
+        assert "PARTITION BY empresa, pedido, produto, cor ORDER BY item" in ddl
+        assert "min(qtde) OVER" not in ddl
 
     def test_rollback_derruba_as_tres_views(self):
         import inspect

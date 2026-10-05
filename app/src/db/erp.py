@@ -13,6 +13,46 @@ from src.config import get_settings
 
 _ALLOWED_PREFIXES = ("select", "with")
 _WHITESPACE = re.compile(r"\s+")
+# Nomes comparados em minúsculas: o SQL Server é case-insensitive por padrão e o nome pode
+# vir como `uspFaturamento`, `DBProDash.dbo.uspFaturamento` ou `[DBProDash].[dbo].[uspFaturamento]`.
+# Só entram aqui as procedures que apenas leem: as `uspRel_CCusto_Niveis*` e a
+# `sp_PagRel_CCusto_Niveis` **escrevem** (`TRUNCATE + INSERT`) e por isso ficam de fora.
+PROCEDURES_SOMENTE_LEITURA = frozenset(
+    nome.lower()
+    for nome in (
+        "uspDashFinanceiroContasPagarProgramado",
+        "uspDashFinanceiroContasReceberProgramado",
+        "uspCustoAdmArmFat",
+        "uspCustoAdmArmFatMensal",
+        "uspDesconto",
+        "uspDevolucao",
+        "uspEnderecamentoParaAtenderPedidoGeral",
+        "uspEstorno",
+        "uspFaturamento",
+        "uspFaturamentoDia",
+        "uspListagemBaixasPagar",
+    )
+)
+
+
+def _nome_procedure(sql: str) -> str | None:
+    """Nome da procedure de um `EXEC [banco].[dbo].uspX`, ou None se não for um `EXEC` válido."""
+    corpo = sql.strip().rstrip(";").lstrip("(").strip()
+    if ";" in corpo:
+        return None
+    partes = _WHITESPACE.split(corpo, 2)
+    if len(partes) < 2 or partes[0].lower() not in ("exec", "execute") or partes[1].startswith("@"):
+        return None
+    return partes[1].replace("[", "").replace("]", "").split(".")[-1].lower()
+
+
+def _params(params: Sequence[Any] | str | None) -> tuple[Any, ...]:
+    """`str` solto vira **um** parâmetro (não uma sequência de caracteres)."""
+    if params is None:
+        return ()
+    if isinstance(params, str):
+        return (params,)
+    return tuple(params)
 
 
 def connection_string() -> str:
@@ -31,11 +71,15 @@ def connection_string() -> str:
 
 
 def assert_read_only(sql: str) -> None:
-    first = _WHITESPACE.split(sql.strip().lstrip("("), 1)[0].lower()
-    if first not in _ALLOWED_PREFIXES:
-        raise PermissionError(
-            f"SQL bloqueado no ERP (somente SELECT/WITH permitido): {first!r}"
-        )
+    primeiro = _WHITESPACE.split(sql.strip().lstrip("("), 1)[0].lower()
+    if primeiro in _ALLOWED_PREFIXES:
+        return
+    procedure = _nome_procedure(sql)
+    if procedure in PROCEDURES_SOMENTE_LEITURA:
+        return
+    raise PermissionError(
+        f"SQL bloqueado no ERP (somente SELECT/WITH/EXEC whitelistado): {primeiro!r}"
+    )
 
 
 @contextmanager
@@ -57,18 +101,18 @@ def _rows(cursor: pyodbc.Cursor) -> list[dict[str, Any]]:
 
 def query(
     sql: str,
-    params: Sequence[Any] | None = None,
+    params: Sequence[Any] | str | None = None,
     read_only: bool = True,
 ) -> list[dict[str, Any]]:
     if read_only:
         assert_read_only(sql)
     with connect(read_only=read_only) as conn:
         cursor = conn.cursor()
-        cursor.execute(sql, tuple(params or ()))
+        cursor.execute(sql, _params(params))
         return _rows(cursor)
 
 
-def scalar(sql: str, params: Sequence[Any] | None = None) -> Any:
+def scalar(sql: str, params: Sequence[Any] | str | None = None) -> Any:
     rows = query(sql, params)
     if not rows:
         return None

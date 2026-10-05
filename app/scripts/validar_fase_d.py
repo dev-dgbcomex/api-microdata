@@ -382,7 +382,8 @@ def validar_estoque() -> Relatorio:
 SQL_SUGESTAO_ROLOS = """
 with itens as (
     select Pedido, Item, Produto, Cor, Qtde,
-           (Qtde - Qtde_Romaneio - Qtde_Acerto) as Qtde_Saldo
+           (Qtde - Qtde_Romaneio - Qtde_Acerto) as Qtde_Saldo,
+           first_value(Qtde) over (partition by Pedido, Produto, Cor order by Item) as Qtde_Item
     from Vw_Car_Itens_Pedido
     where (Qtde - Qtde_Romaneio - Qtde_Acerto) > 0
 ),
@@ -406,25 +407,28 @@ acum as (
     from disp d
 ),
 sel as (
-    select i.Pedido, i.Item, i.Produto, i.Cor, i.Qtde, i.Qtde_Saldo,
+    -- esq.: item com saldo e **sem** rolo continua na linha, como no cursor da procedure
+    select i.Pedido, i.Item, i.Produto, i.Cor, i.Qtde, i.Qtde_Saldo, i.Qtde_Item,
            a.SubLote, a.Gaveta, a.Nro_Rolo, a.Nro_Peca, a.Metros
     from itens i
-    join acum a on a.Produto = i.Produto and a.Cor = i.Cor
-    where a.Soma_Metros <= i.Qtde_Saldo or abs(a.Soma_Metros - i.Qtde_Saldo) < 0.01
+    left join acum a
+        on a.Produto = i.Produto and a.Cor = i.Cor
+       and (a.Soma_Metros <= i.Qtde_Saldo or abs(a.Soma_Metros - i.Qtde_Saldo) < 0.01)
 )
-select Pedido, Item, Produto, Cor, min(Qtde) as Qtde_Item, Qtde_Saldo, min(SubLote) as Sublote,
-       count(*) as Qtde_Pecas, sum(Metros) as Total_Metros,
-       stuff((select ', ' + cast(Gaveta as varchar(20)) from (
-                   select distinct Gaveta from sel s3
-                    where s3.Pedido = s.Pedido and s3.Item = s.Item) g
-                 order by Gaveta
-                 for xml path(''), type).value('.', 'nvarchar(max)'), 1, 2, '') as Gavetas,
-       stuff((select ', ' + right('0000000000' + Nro_Rolo, 10) + right('000' + Nro_Peca, 3)
-                from sel s4 where s4.Pedido = s.Pedido and s4.Item = s.Item
-                order by Nro_Rolo, Nro_Peca
-                for xml path(''), type).value('.', 'nvarchar(max)'), 1, 2, '') as Rolos
+select Pedido, Item, Produto, Cor, Qtde_Item,
+       Qtde_Saldo, min(SubLote) as Sublote,
+       count(Nro_Rolo) as Qtde_Pecas, sum(Metros) as Total_Metros,
+       nullif(stuff((select ', ' + cast(Gaveta as varchar(20)) from (
+                    select distinct Gaveta from sel s3
+                     where s3.Pedido = s.Pedido and s3.Item = s.Item) g
+                  order by Gaveta
+                  for xml path(''), type).value('.', 'nvarchar(max)'), 1, 2, ''), '') as Gavetas,
+       nullif(stuff((select ', ' + right('0000000000' + Nro_Rolo, 10) + right('000' + Nro_Peca, 3)
+                 from sel s4 where s4.Pedido = s.Pedido and s4.Item = s.Item
+                 order by Nro_Rolo, Nro_Peca
+                 for xml path(''), type).value('.', 'nvarchar(max)'), 1, 2, ''), '') as Rolos
 from sel s
-group by Pedido, Item, Produto, Cor, Qtde_Saldo
+group by Pedido, Item, Produto, Cor, Qtde_Item, Qtde_Saldo
 """
 
 CAMPOS_SUGESTAO = ("qtde_saldo", "qtde_pecas", "total_metros", "sublote", "gavetas", "rolos")
@@ -468,7 +472,10 @@ def validar_sugestao_rolos() -> Relatorio:
             ).mappings()
         }
 
-    rel.conferir("itens com sugestao", len(meu), len(legado))
+    rel.conferir("itens com saldo", len(meu), len(legado))
+    sem_sugestao_meu = sum(1 for linha in meu.values() if not _valor(linha, "rolos"))
+    sem_sugestao_legado = sum(1 for linha in legado.values() if not _valor(linha, "rolos"))
+    rel.conferir("itens sem rolo disponivel", sem_sugestao_meu, sem_sugestao_legado)
     for chave_item in sorted(set(legado) | set(meu)):
         esperado, obtido = legado.get(chave_item), meu.get(chave_item)
         if esperado is None or obtido is None:
