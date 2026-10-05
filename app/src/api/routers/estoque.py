@@ -8,9 +8,14 @@ reproduz a mesma regra número a número (validada em `scripts.validar_fase_d su
 
 from __future__ import annotations
 
+from decimal import Decimal
+from io import BytesIO
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, Response
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import text
 
 from src.db import warehouse
@@ -138,6 +143,15 @@ def dados(
     return saida
 
 
+def _texto(valor: Any) -> str:
+    """O legado jogava o valor cru no cartão: `None` virava vazio, `Decimal` perdia o zero."""
+    if valor is None:
+        return ""
+    if isinstance(valor, Decimal):
+        return f"{valor:f}"
+    return str(valor)
+
+
 @router.get("/sugestao-rolos/{pedido}")
 def sugestao_rolos(pedido: str) -> list[dict[str, Any]]:
     """Sugestão de rolos por item do pedido (`core.pedido_sugestao_rolos`).
@@ -161,3 +175,73 @@ def sugestao_rolos(pedido: str) -> list[dict[str, Any]]:
         item["Qtde_Pecas"] = int(item["Qtde_Pecas"] or 0)
         saida.append(item)
     return saida
+
+
+CARTES_POR_LINHA = 3
+CAMPOS_CARTAO = (
+    ("Produto", "Produto"),
+    ("Cor", "Cor"),
+    ("Qtde Item", "Qtde_Item"),
+    ("Qtde Saldo", "Qtde_Saldo"),
+    ("SubLote", "Sublote"),
+    ("Gavetas", "Gavetas"),
+    ("Qtde Peças", "Qtde_Pecas"),
+    ("Rolos", "Rolos"),
+    ("Total Metros", "Total_Metros"),
+)
+
+
+@router.get("/pdf/sugestao-rolos/{pedido}")
+def pdf_sugestao_rolos(pedido: str) -> Response:
+    """Mesmos cartões do legado (A4 paisagem, 3 por linha), servidos da view local.
+
+    O legado gerava um arquivo temporário por request; aqui o PDF é montado em memória. Sem
+    itens para o pedido, `404` como no `oraculum`.
+    """
+    itens = sugestao_rolos(pedido)
+    if not itens:
+        raise HTTPException(status_code=404, detail="Nenhum item encontrado")
+
+    cartoes = []
+    for item in itens:
+        cartao = Table(
+            [[rotulo, _texto(item.get(campo))] for rotulo, campo in CAMPOS_CARTAO],
+            colWidths=[80, 100],
+        )
+        cartao.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        cartoes.append(cartao)
+
+    elementos: list[Any] = []
+    for inicio in range(0, len(cartoes), CARTES_POR_LINHA):
+        linha = cartoes[inicio : inicio + CARTES_POR_LINHA]
+        elementos.append(
+            Table([linha], colWidths=[250] * len(linha), hAlign="LEFT")
+        )
+        elementos.append(Spacer(1, 10))
+
+    buffer = BytesIO()
+    SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=20,
+        bottomMargin=20,
+    ).build(elementos)
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=sugestao_{pedido.strip()}.pdf"},
+    )

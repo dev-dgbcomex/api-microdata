@@ -24,7 +24,8 @@
 
 Das 17: **14 ficam no alvo** (re-exposição lendo o **warehouse local**), `/health` é redefinido
 (sonda Postgres local + status ETL) e **`/test-procedure` e `/procedures` são eliminados**
-(pass-through de `EXEC` e inventário interno).
+(pass-through de `EXEC` e inventário interno). **Status (02/out/2026): as 14 + `/health` já estão
+publicadas e medidas contra as procedures** (`app/scripts/validar_api.py`: 300/300).
 
 Conexão atual (`database.py`): pyodbc → `DB_SERVER/DB_DATABASE` (SQL Server), uma conexão por
 request; datas no padrão `DDMMYYYY` convertidas para `DD/MM/YYYY` (`formatar_data_para_sql`).
@@ -42,7 +43,7 @@ request; datas no padrão `DDMMYYYY` convertidas para `DD/MM/YYYY` (`formatar_da
 |---|------|-----------------|-----------|-----------|----------------------|-------|
 | 1 | `GET /dados` | Query inline (`main.py:35`) — `Cte_Peca` ⨝ `CTE_Baixa` (antijoin) ⨝ `Produtos_Tecidos`, `WHERE Nro_Rolo_Origem IS NULL AND CB.Empresa IS NULL` (peças em aberto) | `Cte_Peca`, `CTE_Baixa`, `Produtos_Tecidos` (Estudos 19/34) | `core.estoque_pecas_em_aberto` (grão peça: `Empresa/Situacao/Nro_Rolo/Nro_Peca`) | array de `{Empresa, Nro_Rolo, Nro_Peca, Produto, Produto_Descricao, Situacao, Situacao_Descricao, Cor, Cor_Descricao, Desenho, Desenho_Descricao, Categoria, Categoria_Descricao, Variante, Variante_Descricao, Largura, Metros, Peso, Data_Entrada, Gaveta, Chave}` | **Sem paginação no legado** (~300k peças `fetchall`); na Fase E: `limite` (padrão 500, máx. 10.000) + `offset` e filtros `produto`/`cor`/`situacao`. `Chave = Nro_Rolo+Situacao+Cor+Desenho` (concatenação ambígua no legado) →derivado com separador. Campos `char` com padding → `trim`. Campos do legado **fora** do mart (`Lote_Interno`, `Aviso`, `SubLote`, `Num_Etq_Aux`, `Linha`) ficam de fora até a Fase F |
 | 2 | `GET /sugestao-rolos/{pedido}` | `EXEC DBMicrodata_DGB.dbo.uspEnderecamentoParaAtenderPedidoGeral @Pedido char(8)` — para cada item do pedido, acumula rolos em aberto até `Qtde_Saldo` (janela por `Gaveta/Tear DESC/Nro_Rolo DESC`) | `Vw_Car_Itens_Pedido`, `Cte_Peca`, `CTE_Baixa` (Estudos 28/34) | `core.pedido_sugestao_rolos` — uma linha por **item** com saldo (`LEFT JOIN` na lista de rolos: item sem sugestão sai com nulos e `Qtde_Pecas = 0`, como no cursor do legado) | array de `{Produto, Cor, Qtde_Item, Qtde_Saldo, Sublote, Gavetas, Rolos, Qtde_Pecas, Total_Metros}` | Parâmetro `char(8)`; legado com `CURSOR` + `FOR XML PATH` (não portar). Gd: tolerância `ABS(Soma-Saldo)<0.01`. `Qtde_Item` é `TOP 1 Qtde` do mesmo `(Pedido, Produto, Cor)` **sem `ORDER BY`** — na prática sai o **primeiro item**; reproduzido com `first_value(...) ORDER BY item` |
-| 3 | `GET /pdf/sugestao-rolos/{pedido}` | Mesmo `EXEC` + reportlab (A4 paisagem, 3 cards/linha) | idem #2 | idem #2 (mesmo cálculo) | PDF `Content-Disposition: inline`; 404 se vazio | Card mostra Produto, Cor, Qtde Item, Qtde Saldo, Sublote, Gavetas, Qtde Peças, Rolos, Total Metros — manter em server-side |
+| 3 | `GET /pdf/sugestao-rolos/{pedido}` | Mesmo `EXEC` + reportlab (A4 paisagem, 3 cards/linha) | idem #2 | idem #2 (mesmo cálculo) | PDF `Content-Disposition: inline`; 404 se vazio | **Portado:** BytesIO em memória (o legado criava arquivo temporário por request). Card mostra Produto, Cor, Qtde Item, Qtde Saldo, Sublote, Gavetas, Qtde Peças, Rolos, Total Metros |
 
 ### 2.2 KPIs do dashboard (lê `DBProDash` — BI a portar)
 

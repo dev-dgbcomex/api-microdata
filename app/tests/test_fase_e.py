@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app
-from src.api.routers import kpis
+from src.api.routers import estoque, kpis
 from src.db import erp
 
 client = TestClient(app)
@@ -41,9 +42,8 @@ class TestRotasPublicadas:
         assert "/procedures" not in rotas
         assert "/test-procedure/{procedure_name}" not in rotas
 
-    def test_pdf_de_sugestao_ainda_nao_existe(self):
-        """Fica para o pedaco seguinte da Fase E (o legado gerava os cartoes)."""
-        assert "/pdf/sugestao-rolos/{pedido}" not in app.openapi()["paths"]
+    def test_pdf_de_sugestao_esta_publicado(self):
+        assert "/pdf/sugestao-rolos/{pedido}" in app.openapi()["paths"]
 
     def test_data_invalida_cai_com_422(self):
         assert client.get("/faturamento/15-03-2026").status_code == 422
@@ -65,6 +65,27 @@ class TestJanelasDeData:
 
     def test_doze_mes_atras_da_janela_do_anual(self):
         assert kpis._mes_anterior_doze(date(2026, 10, 1)) == date(2025, 10, 1)
+
+
+class TestPdfSugestaoDeRolos:
+    """Contrato #3: mesmo cartao do legado, sem arquivo temporario em disco."""
+
+    def test_gera_pdf_inline_com_o_nome_do_pedido(self):
+        resposta = client.get("/pdf/sugestao-rolos/00005470")
+        assert resposta.status_code == 200
+        assert resposta.headers["content-type"] == "application/pdf"
+        assert resposta.headers["content-disposition"] == "inline; filename=sugestao_00005470.pdf"
+        assert resposta.content.startswith(b"%PDF-")
+
+    def test_pedido_sem_item_da_404(self):
+        resposta = client.get("/pdf/sugestao-rolos/99999999")
+        assert resposta.status_code == 404
+        assert resposta.json()["detail"] == "Nenhum item encontrado"
+
+    def test_texto_do_cartao_trata_nulo_e_decimal(self):
+        assert estoque._texto(None) == ""
+        assert estoque._texto(Decimal("180.0000")) == "180.0000"
+        assert estoque._texto(3) == "3"
 
 
 class TestGuardDeProcedureNoERP:

@@ -406,10 +406,12 @@ warehouse local completo; legado desligado sem perda de tela.
       e os 11 KPIs (incluindo `/dashboard-completo/{data}`), com `/health`; contratos medidos contra as
       procedures em `scripts/validar_api.py` (**300/300**). `/procedures` e `/test-procedure/{nome}`
       do legado **não** foram portados (eram `EXEC` arbitrário no ERP).
+- [x] Fase E (2/3): **`GET /pdf/sugestao-rolos/{pedido}`** (reportlab, A4 paisagem, 3 cartões por
+      linha, `Content-Disposition: inline`, 404 sem itens) gerado **em memória** a partir da view local.
+- [ ] Fase E (2/3): **auth** (D5/D6) — JWT + bcrypt, escopos por rota.
+- [ ] Fase E (3/3): **sync on-demand** dos KPIs p/ Neon.
 - [x] ETL: carga completa agora **reconcilia exclusões** do ERP (`upsert.apagar_ausentes`) — o
       pedido `013290` (excluído no ERP) sobrevivia no `raw` e inflava o faturamento.
-- [ ] Fase E (2/3): **auth** (D5/D6) e **PDF** de sugestão de rolos (reportlab).
-- [ ] Fase E (3/3): **sync on-demand** dos KPIs p/ Neon.
 - [ ] Cutover (Fase F) e documentação final.
 
 ---
