@@ -43,8 +43,8 @@ no Neon; mudanças de marts são aditivas e versionadas.
 | D2b | **Postgres local (warehouse)** | nativo / Docker / Neon | ✔ **resolvida**: PostgreSQL 17 **nativo** nesta máquina (`localhost:5432`), database `dgbcomex_warehouse` criado | B,C |
 | D3 | **Runner do ETL** | VM on-prem (mesma rede do ERP) / máquina dev / CI | máquina dev nesta fase (warehouse está aqui); VM separada quando for p/ produção | C |
 | D4 | **Frequência do ETL** | diária / horária / on-demand | **dupla**: ETL pesado diário no **Postgres local**; **sync de KPIs p/ Neon é on-demand** (no request, quando defasado) | C,D,E |
-| D5 | **Auth do alvo** | reusar tabela `usuario` (senha em **texto claro** — ruim) vs auth nova JWT+bcrypt | **auth nova** (JWT+bcrypt), escopos derivados de `Usuario_Acessos` | E |
-| D6 | **Multiempresa** | `Codigo_Empresas` (`char(2)`) imbutido por token vs header | empresa do token (padrão `SIS_UsuarioEmpresa`); suportar `?empresa=13` p/ dev | E |
+| D5 | **Auth do alvo** | reusar tabela `usuario` (senha em **texto claro** — ruim) vs auth nova JWT+bcrypt | **auth nova** (JWT+bcrypt) em `auth.usuario` no Neon; **entregue 05/out/2026** — falta o filtro por `empresa`/papel | E |
+| D6 | **Multiempresa** | `Codigo_Empresas` (`char(2)`) imbutido por token vs header | empresa do token (padrão `SIS_UsuarioEmpresa`); suportar `?empresa=13` p/ dev — o token **já carrega** `empresa`, falta aplicar o filtro na query | E |
 | D7 | **`/contas-pagas`** | reabrir como resumo vs lista vs manter `{}` | **resumo** `{ValorPago, QtdeBaixas}` do mês + lista paginada | E |
 | D8 | **PDF** | reportlab (mantém) vs weasyprint | reportlab (mesmo layout, zero refactor) | E |
 
@@ -67,7 +67,7 @@ app/
 │                              #       bcrypt, PyJWT, python-dateutil, python-dotenv
 ├─ alembic/                    # migrations: schemas do Postgres local (raw/core/marts/etl)
 │  └─ env.py                   # + migrations dos schemas próprios no Neon (marts/etl da API)
-├─ .env                        # gitignored (DB_* do ERP + DATABASE_URL Neon + DATABASE_URL_LOCAL)
+├─ .env                        # gitignored (DB_* do ERP + DATABASE_URL Neon + DATABASE_URL_LOCAL + JWT_SECRET)
 ├─ src/
 │  ├─ config.py                # pydantic-settings; carrega .env
 │  ├─ db/
@@ -349,10 +349,18 @@ pequeno** correspondente, on-demand — nunca o volume bruto do ERP.
 | Agregado | `GET /dashboard-completo/{data}` (alias que lê os marts) |
 | Infra | `GET /health` (sonda Neon + status `etl.watermark`) |
 
-> **Já feito (02/out/2026):** as 13 rotas de negócio + `/health` leem o warehouse local, com
-> `scripts/validar_api.py` comparando cada uma contra a procedure original (**264/264**).
-> `GET /pdf/sugestao-rolos/{pedido}` (reportlab), auth e sync on-demand ao Neon ficam para os
-> próximos passos; `/procedures` e `/test-procedure/{nome}` foram eliminados (porta de fuga).
+> **Já feito (05/out/2026):** as 13 rotas de negócio em JSON + `/pdf/sugestao-rolos/{pedido}`
+> (reportlab) + `/health` leem o warehouse local, com `scripts/validar_api.py` comparando cada
+> uma contra a procedure original (**300/300**). `/procedures` e `/test-procedure/{nome}` foram
+> eliminados (porta de fuga).
+>
+> **Auth entregue (05/out/2026, D5):** `POST /auth/login` + `GET /auth/eu` em schema `auth` do
+> Neon (JWT HS256 + bcrypt, `JWT_SECRET` >= 32 bytes, `API_AUTENTICACAO_EXIGIDA` com padrão
+> `true`), `python -m src.cli usuario` para cadastrar e `tests/test_auth.py` cobrindo. **Falta**
+> da D6: filtrar as queries pela `empresa` do token (o token já a carrega) e o filtro por papel
+> por rota.
+>
+> **Falta:** sync on-demand ao Neon (D4).
 
 Entregáveis da fase:
 1. **Auth** (D5/D6): login, JWT curto, `bcrypt`; escopos por rota derivados dos tópicos.
@@ -401,14 +409,15 @@ warehouse local completo; legado desligado sem perda de tela.
       iniciais + 9 acrescentadas na Fase D = 46 no registry).
 - [x] PORTAR regras `core`/`marts` (local) e validar KPIs (Fase D) — **8/8 fatias prontas**:
       faturamento, contas pagas, financeiro programado, estornos, devoluções, estoque em aberto,
-      sugestão de rolos e custos/centro de custo (**2198/2198** comparações iguais ao `DBProDash`).
+      sugestão de rolos e custos/centro de custo (**2220/2220** comparações iguais ao `DBProDash`).
 - [x] Fase E (1/3): **13 rotas de negócio** lendo o warehouse local — `/dados`, `/sugestao-rolos/{pedido}`
       e os 11 KPIs (incluindo `/dashboard-completo/{data}`), com `/health`; contratos medidos contra as
       procedures em `scripts/validar_api.py` (**300/300**). `/procedures` e `/test-procedure/{nome}`
       do legado **não** foram portados (eram `EXEC` arbitrário no ERP).
 - [x] Fase E (2/3): **`GET /pdf/sugestao-rolos/{pedido}`** (reportlab, A4 paisagem, 3 cartões por
       linha, `Content-Disposition: inline`, 404 sem itens) gerado **em memória** a partir da view local.
-- [ ] Fase E (2/3): **auth** (D5/D6) — JWT + bcrypt, escopos por rota.
+- [x] Fase E (2/3): **auth** (D5) - JWT HS256 + bcrypt em `auth.usuario` (Neon), `POST /auth/login` + `GET /auth/eu`, `Depends(exigir_autenticado)` nas 14 rotas de negocio,
+      `API_AUTENTICACAO_EXIGIDA=true` por padrao, `python -m src.cli usuario` e `tests/test_auth.py` (110 testes). **Falta** a D6: filtrar por `empresa` do token e por papel.
 - [ ] Fase E (3/3): **sync on-demand** dos KPIs p/ Neon.
 - [x] ETL: carga completa agora **reconcilia exclusões** do ERP (`upsert.apagar_ausentes`) — o
       pedido `013290` (excluído no ERP) sobrevivia no `raw` e inflava o faturamento.

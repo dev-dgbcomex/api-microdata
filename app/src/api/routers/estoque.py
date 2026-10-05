@@ -12,15 +12,16 @@ from decimal import Decimal
 from io import BytesIO
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import text
 
+from src.api.auth.dependencias import exigir_autenticado
 from src.db import warehouse
 
-router = APIRouter(tags=["estoque"])
+router = APIRouter(tags=["estoque"], dependencies=[Depends(exigir_autenticado)])
 
 COLUNAS_PECA = """
     empresa,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sys
 from time import monotonic
 from typing import Any
@@ -320,7 +321,68 @@ def build_parser() -> argparse.ArgumentParser:
         help="nao compara a contagem do ERP com a do raw",
     )
     p_boot.set_defaults(func=cmd_bootstrap)
+
+    p_usuario = sub.add_parser(
+        "usuario", help="cria/atualiza um usuario da API em auth.usuario (Neon)"
+    )
+    p_usuario.add_argument("--email", help="omitido com --listar")
+    p_usuario.add_argument("--senha", help="omitida, gera uma aleatoria e mostra uma vez")
+    p_usuario.add_argument("--nome", default="")
+    p_usuario.add_argument(
+        "--papeis", default="leitura", help="separados por virgula (ex.: leitura,admin)"
+    )
+    p_usuario.add_argument("--empresa", help="codigo char(2) que o token carrega")
+    p_usuario.add_argument(
+        "--inativo", action="store_true", help="cadastra sem poder entrar"
+    )
+    p_usuario.add_argument(
+        "--listar", action="store_true", help="so lista os usuarios cadastrados"
+    )
+    p_usuario.set_defaults(func=cmd_usuario)
     return parser
+
+
+def cmd_usuario(args: argparse.Namespace) -> int:
+    from src.api.auth import usuarios as auth_usuarios
+
+    if args.listar:
+        from sqlalchemy import text
+
+        from src.db import neon
+
+        with neon.engine().connect() as conn:
+            linhas = conn.execute(
+                text(
+                    "select id, email, nome, papeis, empresa, ativo from auth.usuario "
+                    "order by id"
+                )
+            ).fetchall()
+        if not linhas:
+            print("nenhum usuario cadastrado")
+            return 0
+        for linha in linhas:
+            papeis = ", ".join(linha.papeis or [])
+            print(
+                f"{linha.id:>4}  {linha.email:<40} {linha.nome:<20} "
+                f"[{papeis}] empresa={linha.empresa or '-'} "
+                f"{'ativo' if linha.ativo else 'INATIVO'}"
+            )
+        return 0
+
+    papeis = [item.strip() for item in args.papeis.split(",") if item.strip()]
+    senha = args.senha or secrets.token_urlsafe(12)
+    usuario = auth_usuarios.salvar(
+        email=args.email,
+        senha=senha,
+        nome=args.nome,
+        papeis=papeis,
+        empresa=args.empresa,
+        ativo=not args.inativo,
+    )
+    print(f"usuario {usuario.id} <{usuario.email}> papeis={usuario.papeis}")
+    if not args.senha:
+        print(f"senha gerada (mostrada uma vez): {senha}")
+    return 0
 
 
 def main() -> int:

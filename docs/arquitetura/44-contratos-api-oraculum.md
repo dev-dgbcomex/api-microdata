@@ -20,12 +20,14 @@
 |-------|-------|-----|
 | Negócio (dados de estoque) | `/dados`, `/sugestao-rolos/{pedido}`, `/pdf/sugestao-rolos/{pedido}` | 3 |
 | Negócio (KPIs/dashboard) | `/faturamento/{data}`, `/faturamento-dia/{data}`, `/contas-pagas/{data}`, `/custos-administrativos-anual`, `/custos-administrativos-mensal`, `/descontos/{data}`, `/devolucoes/{data}`, `/estornos/{data}`, `/contas-receber-programado`, `/contas-pagar-programado`, `/dashboard-completo/{data}` | 11 |
-| Infra/dev | `/health`, `/procedures`, `/test-procedure/{procedure_name}` | 3 |
+| Auth (D5) | `/auth/login`, `/auth/eu` | 2 |
+| Infra/dev | `/health` | 1 |
 
 Das 17: **14 ficam no alvo** (re-exposição lendo o **warehouse local**), `/health` é redefinido
 (sonda Postgres local + status ETL) e **`/test-procedure` e `/procedures` são eliminados**
-(pass-through de `EXEC` e inventário interno). **Status (02/out/2026): as 14 + `/health` já estão
-publicadas e medidas contra as procedures** (`app/scripts/validar_api.py`: 300/300).
+(pass-through de `EXEC` e inventário interno). **Status (05/out/2026): as 14 + `/health` + as 2 de
+auth publicadas e medidas contra as procedures** (`app/scripts/validar_api.py`: 300/300 fora a
+corrida do ERP vivo descrita na §5).
 
 Conexão atual (`database.py`): pyodbc → `DB_SERVER/DB_DATABASE` (SQL Server), uma conexão por
 request; datas no padrão `DDMMYYYY` convertidas para `DD/MM/YYYY` (`formatar_data_para_sql`).
@@ -123,6 +125,51 @@ ficam de fora porque **escrevem**).
 > baixada). As duas rodadas acima foram feitas logo após `bootstrap` dos domínios envolvidos; uma
 > divergência isolada de um documento novo significa recarregar o domínio e repetir, não regerar
 > regra.
+>
+> **Medido em 05/out/2026** (vale registrar porque muda a leitura do resultado): durante uma mesma
+> sessão o `DBProDash` devolveu valores diferentes para chaves que antes batiam, **sem nenhuma
+> recarga do warehouse** — `('00006573','1','000028','00056')` foi `4966,00` e depois `4977,90`, e
+> `('00006677','1','000028','00056')` trocou de 38 para 39 peças. A peça `0000816455/001` teve
+> `Cte_Peca.Metros` alterado de `41,1000` para `41,0000` entre duas leituras do mesmo dia, e uma
+> duplicata de contas a receber mudou de saldo (`QtdeDoc` 876 → 875). As contagens por fonte
+> continuam iguais (`erp = raw`: `Cte_Peca` 300.601, `CTE_Baixa` 282.267, `Car_Itens_Pedido`
+> 41.479) e, com o warehouse recarregado, a divergência cai de 12 para 2 → é **churn do ERP**, não
+> regra portada. Enquanto o time de estoque ajusta `Cte_Peca`, a paridade de rolos/ccustos oscila em
+> ~1% das comparações; o sinal para suspeitar de regra é a divergência **persistir após
+> `bootstrap --dominio <dominio>`**.
+
+---
+
+## 6. Autenticação (D5/D6)
+
+Decisão: **auth nova**, JWT + bcrypt, **fora** de `public.usuario` (as 4 contas legadas têm senha de
+60 caracteres que não é bcrypt — nenhum hash compatível). Usuários, papéis e empresa ficam no schema
+próprio `auth` do **Neon** (`app/alembic/versions/1002_neon_auth.py`).
+
+| Rota | Método | Auth | Contrato |
+|------|--------|------|----------|
+| `/auth/login` | POST | pública | corpo `{email, senha}` → `{"token", "tipo": "Bearer", "expira_em_minutos", "papeis", "empresa"}`; `401` com `detail` genérico (não revela se o e-mail existe) |
+| `/auth/eu` | GET | `Bearer` | `{id, email, nome, papeis, empresa, admin}` |
+| demais 14 + `/health` | — | `Bearer` em todas as de negócio (`Depends(exigir_autenticado)` no router); `/health` segue pública | `401` sem token / inválido / usuário inativo |
+
+- **Senha**: bcrypt (custo 12), mínimo de 8 caracteres; `usuarios.salvar` faz upsert por `email`.
+- **Token**: HS256, `exp` = `JWT_TTL_MINUTOS` (30), `iss` fixo; `sub` = `id`. O `Settings` **recusa
+  subir** com `JWT_SECRET` < 32 bytes quando a auth está exigida (o PyJWT rejeita chave curta).
+- **Papéis**: `text[]` (`admin`, `leitura`); `exigir_papeis` deixa passar `admin` sempre. Hoje as
+  14 rotas de negócio pedem só `exigir_autenticado` — o filtro por papel entra junto do
+  corte por empresa.
+- **Empresa**: `char(2)` opcional, vai no token como `empresa`; **ainda não filtra** as queries
+  (a Fase F sync no Neon é que vai precisar disso) — registrado aqui para não ser surpresa.
+- **Operação**: `python -m src.cli usuario --email ... [--senha ...] [--papeis leitura,admin]
+  [--empresa 13] [--inativo]`, e `--listar` para inventariar. Sem `--senha` gera uma senha aleatória
+  e mostra **uma vez**.
+- **Desligar a auth** só para carga local/validador: `API_AUTENTICACAO_EXIGIDA=false`
+  (`scripts/validar_api.py` já faz isso; a suíte de testes usa `tests/conftest.py`). O padrão é
+  `true` — **fail closed**: sem usuário no Neon, tudo responde `401`.
+
+Testes: `app/tests/test_auth.py` (bcrypt, token forjado/adulterado/sem `sub`, 401 por token
+inválido, usuário inexistente, inativo, `/health` público, `admin` x papel). Cobertura ponta a ponta
+feita contra o Neon com usuário descartável (login → `/faturamento` → `/auth/eu`), removido depois.
 
 ---
 

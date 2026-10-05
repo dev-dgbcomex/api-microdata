@@ -16,12 +16,13 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from sqlalchemy import text
 
+from src.api.auth.dependencias import exigir_autenticado
 from src.db import warehouse
 
-router = APIRouter(tags=["kpis"])
+router = APIRouter(tags=["kpis"], dependencies=[Depends(exigir_autenticado)])
 
 LIMITE_VENCIMENTO = date(2050, 12, 31)
 

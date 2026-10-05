@@ -2,20 +2,31 @@
 
 Roda as rotas via `TestClient` (nenhum HTTP de rede) e compara com `EXEC` das `usp` do
 `DBProDash` — as únicas executadas são as da whitelist de `src.db.erp.PROCEDURES_SOMENTE_LEITURA`.
+
+A autenticação é desligada para este script (`API_AUTENTICACAO_EXIGIDA=false`): ele roda na
+máquina do warehouse, sem usuário cadastrado. Para exercitar o token, use a API de verdade.
+
+Uso:
+    python -m scripts.validar_api
+
+Sai com código 1 se alguma comparação divergir.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date
 from decimal import Decimal
 
-from fastapi.testclient import TestClient
-from sqlalchemy import text
+os.environ.setdefault("API_AUTENTICACAO_EXIGIDA", "false")
 
-from src.api.main import app
-from src.db import erp, warehouse
+from fastapi.testclient import TestClient  # noqa: E402  (precisa do env acima)
+from sqlalchemy import text  # noqa: E402
+
+from src.api.main import app  # noqa: E402
+from src.db import erp, warehouse  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
