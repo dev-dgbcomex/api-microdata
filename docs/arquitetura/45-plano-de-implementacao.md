@@ -397,6 +397,15 @@ que a do legado (unica leitura, não 10 procs); auth bloqueando rota sem escopo;
 Critério de aceite F: `dgbcomex` operando com dashboards servidos do Neon (marts da API);
 warehouse local completo; legado desligado sem perda de tela.
 
+> **Item 4 entregue (05/out/2026):** [Doc 46 — Runbook de operação e cutover](./46-runbook-operacao-e-cutover.md),
+> com o contrato dos 7 marts do Neon para o `dgbcomex` (§8), a sequência de agendamento, o painel do
+> `/health`, backup e a tabela de incidente. O `README.md` da raiz também foi escrito.
+>
+> **Itens 1–3 não são trabalho de código desta API** — são decisão de produto + trabalho no repo
+> `dgbcomex` + tempo de calendário (1–2 semanas de sombra). O que a API entrega de contrato está
+> pronto e verificado: os 7 marts estão no Neon com `publicado_em` recente e o `dgbcomex` pode
+> consumi-los direto, sem passar pela API.
+
 ---
 
 ## 8. Próximas ações imediatas (ordem)
@@ -431,7 +440,10 @@ warehouse local completo; legado desligado sem perda de tela.
       linhas / 7 marts em ~2s; `/health` mostra `neon_publicacao`. `tests/test_publicar_neon.py` (15 testes).
 - [x] ETL: carga completa agora **reconcilia exclusões** do ERP (`upsert.apagar_ausentes`) — o
       pedido `013290` (excluído no ERP) sobrevivia no `raw` e inflava o faturamento.
-- [ ] Cutover (Fase F) e documentação final.
+- [x] Fase F (item 4): **runbook de operação e cutover** — [Doc 46](./46-runbook-operacao-e-cutover.md)
+      (ligar a API, ETL, publicação, agendamento, monitoramento, backup, entrega ao `dgbcomex`, incidentes) + `README.md`.
+- [ ] Fase F (itens 1–3): apontar o `dgbcomex` para `marts.*`, período de sombra de 1–2 semanas e
+      desligar o `oraculum` — **decisão de produto + repo `dgbcomex` + calendário**, não código.
 
 ---
 
