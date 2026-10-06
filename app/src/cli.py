@@ -333,6 +333,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_usuario.add_argument("--empresa", help="codigo char(2) que o token carrega")
     p_usuario.add_argument(
+        "--escopos",
+        default="",
+        help="rotas liberadas, separadas por virgula (ex.: "
+        "estoque:leitura,faturamento:leitura,financeiro:leitura); padrao e nenhuma",
+    )
+    p_usuario.add_argument(
         "--inativo", action="store_true", help="cadastra sem poder entrar"
     )
     p_usuario.add_argument(
@@ -373,7 +379,7 @@ def cmd_usuario(args: argparse.Namespace) -> int:
         with neon.engine().connect() as conn:
             linhas = conn.execute(
                 text(
-                    "select id, email, nome, papeis, empresa, ativo from auth.usuario "
+                    "select id, email, nome, papeis, empresa, ativo, escopos from auth.usuario "
                     "order by id"
                 )
             ).fetchall()
@@ -382,14 +388,17 @@ def cmd_usuario(args: argparse.Namespace) -> int:
             return 0
         for linha in linhas:
             papeis = ", ".join(linha.papeis or [])
+            escopos = ", ".join(linha.escopos or [])
             print(
                 f"{linha.id:>4}  {linha.email:<40} {linha.nome:<20} "
                 f"[{papeis}] empresa={linha.empresa or '-'} "
+                f"escopos=[{escopos or '-'}] "
                 f"{'ativo' if linha.ativo else 'INATIVO'}"
             )
         return 0
 
     papeis = [item.strip() for item in args.papeis.split(",") if item.strip()]
+    escopos = [item.strip() for item in args.escopos.split(",") if item.strip()]
     senha = args.senha or secrets.token_urlsafe(12)
     usuario = auth_usuarios.salvar(
         email=args.email,
@@ -398,8 +407,13 @@ def cmd_usuario(args: argparse.Namespace) -> int:
         papeis=papeis,
         empresa=args.empresa,
         ativo=not args.inativo,
+        escopos=escopos,
     )
     print(f"usuario {usuario.id} <{usuario.email}> papeis={usuario.papeis}")
+    print(
+        f"empresa={usuario.empresa or '(todas)'} "
+        f"escopos={', '.join(usuario.escopos) or '(nenhum: 403 em tudo)'}"
+    )
     if not args.senha:
         print(f"senha gerada (mostrada uma vez): {senha}")
     return 0

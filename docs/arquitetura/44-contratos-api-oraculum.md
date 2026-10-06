@@ -149,36 +149,77 @@ ficam de fora porque **escrevem**).
 
 ---
 
-## 6. Autenticação (D5/D6)
+## 6. Autenticação, escopos e empresa (D5/D6)
 
 Decisão: **auth nova**, JWT + bcrypt, **fora** de `public.usuario` (as 4 contas legadas têm senha de
-60 caracteres que não é bcrypt — nenhum hash compatível). Usuários, papéis e empresa ficam no schema
-próprio `auth` do **Neon** (`app/alembic/versions/1002_neon_auth.py`).
+60 caracteres que não é bcrypt — nenhum hash compatível). Usuários, papéis, escopos e empresa ficam
+no schema próprio `auth` do **Neon** (`app/alembic/versions/1002_neon_auth.py`, escopos em
+`1004_neon_escopos.py`).
 
 | Rota | Método | Auth | Contrato |
 |------|--------|------|----------|
-| `/auth/login` | POST | pública | corpo `{email, senha}` → `{"token", "tipo": "Bearer", "expira_em_minutos", "papeis", "empresa"}`; `401` com `detail` genérico (não revela se o e-mail existe) |
-| `/auth/eu` | GET | `Bearer` | `{id, email, nome, papeis, empresa, admin}` |
-| demais 14 + `/health` | — | `Bearer` em todas as de negócio (`Depends(exigir_autenticado)` no router); `/health` segue pública | `401` sem token / inválido / usuário inativo |
+| `/auth/login` | POST | pública | corpo `{email, senha}` → `{"token", "tipo": "Bearer", "expira_em_minutos", "papeis", "empresa", "escopos"}`; `401` com `detail` genérico (não revela se o e-mail existe) |
+| `/auth/eu` | GET | `Bearer` | `{id, email, nome, papeis, empresa, admin, escopos}` |
+| demais 14 + `/health` | — | `Bearer` + escopo por tela (abaixo); `/health` segue pública | `401` sem token / inválido / usuário inativo; `403` sem escopo ou accessing outra empresa |
 
 - **Senha**: bcrypt (custo 12), mínimo de 8 caracteres; `usuarios.salvar` faz upsert por `email`.
 - **Token**: HS256, `exp` = `JWT_TTL_MINUTOS` (30), `iss` fixo; `sub` = `id`. O `Settings` **recusa
   subir** com `JWT_SECRET` < 32 bytes quando a auth está exigida (o PyJWT rejeita chave curta).
-- **Papéis**: `text[]` (`admin`, `leitura`); `exigir_papeis` deixa passar `admin` sempre. Hoje as
-  14 rotas de negócio pedem só `exigir_autenticado` — o filtro por papel entra junto do
-  corte por empresa.
-- **Empresa**: `char(2)` opcional, vai no token como `empresa`; **ainda não filtra** as queries
-  (a Fase F sync no Neon é que vai precisar disso) — registrado aqui para não ser surpresa.
-- **Operação**: `python -m src.cli usuario --email ... [--senha ...] [--papeis leitura,admin]
-  [--empresa 13] [--inativo]`, e `--listar` para inventariar. Sem `--senha` gera uma senha aleatória
-  e mostra **uma vez**.
+- **Papéis**: `text[]` (`admin`, `leitura`). É o corte **grosso**: `admin` passa em tudo,
+  `leitura` não tem restrição própria.
+
+### 6.1 Escopos por tela (o corte que os papéis não dão)
+
+O ERP controlava acesso por `Usuario_Acessos` (Sistema × Tópico — Estudo 41) e o produto precisa do
+mesmo: quem é comercial não enxerga o *programed* financeiro. Com dois papéis isso não sai, então
+cada tela declara o escopo que exige (`app/src/api/auth/escopos.py`):
+
+| Escopo | Telas |
+|--------|-------|
+| `estoque:leitura` | `/dados`, `/sugestao-rolos/{pedido}`, `/pdf/sugestao-rolos/{pedido}` |
+| `faturamento:leitura` | `/faturamento/{data}`, `/faturamento-dia/{data}`, `/descontos/{data}`, `/devolucoes/{data}`, `/estornos/{data}` |
+| `financeiro:leitura` | `/contas-pagas/{data}`, `/contas-receber-programado`, `/contas-pagar-programado`, `/custos-administrativos-anual`, `/custos-administrativos-mensal` |
+| faturamento **e** financeiro | `/dashboard-completo/{data}` — a tela soma os dois grupos, então exige os dois |
+
+Regras: `auth.usuario.escopos` entra com `'{}'` (**falha fechada** — quem é criado sem `--escopos`
+recebe `403` em toda tela de negócio); `admin` e o curinga `'*'` passam em tudo; `/auth/login` e
+`/auth/eu` acceptam qualquer usuário autenticado (é onde a tela descobre o que pode ver).
+`usuarios.salvar` **recusa escopo desconhecido** em vez de gravar lixo.
+
+### 6.2 Corte por empresa
+
+O ERP não filtra por empresa na `SELECT`: ele filtra por **RLS no login SQL**
+(`microdata.Empresas` usa `SIS_UsuarioEmpresa` — Estudo 42 §7), ou seja, o servidor rodava *dentro*
+da empresa do usuário e o número legado já era o da empresa, não do grupo. Aqui o corte é no `where`,
+usando o `Codigo_Empresas` (`char(2)`) que o token carrega:
+
+- `/dados`, `/sugestao-rolos/{pedido}` e `/pdf/sugestao-rolos/{pedido}` aplicam `empresa = <token>`
+  (`empresa_efetiva`); pedido de outra empresa responde lista vazia / `404`, como pedido inexistente;
+- `?empresa=XX` é aceito **só pelo `admin`** (uma empresa por vez) para conferir a outra — usuário
+  comum que peça outra recebe `403`;
+- usuário sem empresa no token é transversal (admin): sem filtro;
+- os KPIs **não** levam empresa no `where`: os marts já são agregados pelas empresas `13`/`14`
+  (`core.empresa_faturamento`) e filtrar quebraria a paridade com o legado — o corte de empresa
+  nessa família é de **escopo**, não de linha.
+
+### 6.3 Operação
+
+- **CLI**: `python -m src.cli usuario --email ... [--senha ...] [--papeis leitura,admin]
+  [--empresa 13] [--escopos estoque:leitura,faturamento:leitura,financeiro:leitura] [--inativo]`, e
+  `--listar` para inventariar (mostra empresa e escopos). Sem `--senha` gera uma senha aleatória e
+  mostra **uma vez**.
 - **Desligar a auth** só para carga local/validador: `API_AUTENTICACAO_EXIGIDA=false`
   (`scripts/validar_api.py` já faz isso; a suíte de testes usa `tests/conftest.py`). O padrão é
-  `true` — **fail closed**: sem usuário no Neon, tudo responde `401`.
+  `true` — **fail closed**: sem usuário no Neon, tudo responde `401`. Desligar a auth também
+  desliga o corte por escopo, mas **não** o de empresa, que vem do `where`.
 
 Testes: `app/tests/test_auth.py` (bcrypt, token forjado/adulterado/sem `sub`, 401 por token
-inválido, usuário inexistente, inativo, `/health` público, `admin` x papel). Cobertura ponta a ponta
-feita contra o Neon com usuário descartável (login → `/faturamento` → `/auth/eu`), removido depois.
+inválido, usuário inexistente, inativo, `/health` público, `admin` x papel) e
+`app/tests/test_escopos_empresa.py` (matriz das **14 telas**: sem escopo `403`, com o escopo certo
+`200`, escopo alheio `403`, `admin` passa em todas; corte por empresa com token `99` e via
+`?empresa=`; paridade — o número com token é igual ao lido sem auth). Cobertura ponta a ponta feita
+contra o Neon com 4 usuários descartáveis (completo, só estoque, nenhum escopo e admin), removidos
+depois.
 
 ---
 

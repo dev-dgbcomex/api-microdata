@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from io import BytesIO
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from reportlab.lib import colors
@@ -18,10 +18,13 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import text
 
-from src.api.auth.dependencias import exigir_autenticado
+from src.api.auth.escopos import ESCOPO_ESTOQUE, empresa_efetiva, exigir_escopo
+from src.api.auth.usuarios import Usuario
 from src.db import warehouse
 
-router = APIRouter(tags=["estoque"], dependencies=[Depends(exigir_autenticado)])
+router = APIRouter(tags=["estoque"])
+
+_dependente = Annotated[Usuario | None, Depends(exigir_escopo(ESCOPO_ESTOQUE))]
 
 COLUNAS_PECA = """
     empresa,
@@ -102,9 +105,13 @@ def _consultar(sql: str, params: dict[str, Any] | None = None) -> list[dict[str,
 
 @router.get("/dados")
 def dados(
+    usuario: _dependente,
     produto: str | None = Query(None, description="Código do produto (`Produto`)"),
     cor: str | None = Query(None, description="Código da cor"),
     situacao: str | None = Query(None, description="Código da situação"),
+    empresa: str | None = Query(
+        None, description="Empresa (`char(2)`); só o admin pode pedir outra além da do token"
+    ),
     limite: int = Query(500, ge=1, le=10_000),
     offset: int = Query(0, ge=0),
 ) -> list[dict[str, Any]]:
@@ -114,9 +121,18 @@ def dados(
     aqui a chave é reconstruída explicitamente como `Nro_Rolo|Situacao|Cor|Desenho`. Campos
     que vinham de `Produtos_Tecidos` (`Lote_Interno`, `Num_Etq_Aux`, `Linha`) não existem no mart
     e ficam de fora — precisam de um join com o cadastro de tecidos.
+
+    **Corte por empresa (D6)**: o `where` já entra com a empresa do token, então o usuário vê só
+    a sua. O ERP fazia isso por RLS no login SQL (`Estudo 42` §7), não na `SELECT` — o número
+    legado é o mesmo porque o servidor rodava dentro da empresa do usuário. Sem empresa no token
+    (admin) a consulta vem sem filtro.
     """
     condicoes: list[str] = []
     params: dict[str, Any] = {"limite": limite, "offset": offset}
+    empresa_do_token = empresa_efetiva(usuario, empresa)
+    if empresa_do_token:
+        condicoes.append("empresa = :empresa")
+        params["empresa"] = empresa_do_token
     if produto:
         condicoes.append("produto = :produto")
         params["produto"] = produto.strip()
@@ -153,19 +169,18 @@ def _texto(valor: Any) -> str:
     return str(valor)
 
 
-@router.get("/sugestao-rolos/{pedido}")
-def sugestao_rolos(pedido: str) -> list[dict[str, Any]]:
-    """Sugestão de rolos por item do pedido (`core.pedido_sugestao_rolos`).
-
-    Uma linha por item com saldo, como no cursor da procedure: item sem rolo disponível vem com
-    `Sublote`/`Gavetas`/`Rolos`/`Total_Metros` nulos e `Qtde_Pecas = 0`. Pedido inexistente ou
-    sem itens com saldo devolve lista vazia.
-    """
+def _sugestao(pedido: str, empresa: str | None) -> list[dict[str, Any]]:
+    """Itens do pedido com saldo, já no formato do legado (sem o corte por empresa)."""
+    condicoes = ["pedido = :pedido"]
+    params: dict[str, Any] = {"pedido": pedido.strip()}
+    if empresa:
+        condicoes.append("empresa = :empresa")
+        params["empresa"] = empresa
     linhas = _consultar(
         "select produto, cor, qtde_item, qtde_saldo, sublote, gavetas, rolos, qtde_pecas, "
         "total_metros from core.pedido_sugestao_rolos "
-        "where pedido = :pedido order by item",
-        {"pedido": pedido.strip()},
+        f"where {' and '.join(condicoes)} order by item",
+        params,
     )
     saida = []
     for linha in linhas:
@@ -176,6 +191,21 @@ def sugestao_rolos(pedido: str) -> list[dict[str, Any]]:
         item["Qtde_Pecas"] = int(item["Qtde_Pecas"] or 0)
         saida.append(item)
     return saida
+
+
+@router.get("/sugestao-rolos/{pedido}")
+def sugestao_rolos(
+    pedido: str,
+    usuario: _dependente,
+    empresa: str | None = Query(None, description="Empresa do pedido; só o admin troca a do token"),
+) -> list[dict[str, Any]]:
+    """Sugestão de rolos por item do pedido (`core.pedido_sugestao_rolos`).
+
+    Uma linha por item com saldo, como no cursor da procedure: item sem rolo disponível vem com
+    `Sublote`/`Gavetas`/`Rolos`/`Total_Metros` nulos e `Qtde_Pecas = 0`. Pedido inexistente, de
+    outra empresa ou sem itens com saldo devolve lista vazia (D6).
+    """
+    return _sugestao(pedido, empresa_efetiva(usuario, empresa))
 
 
 CARTES_POR_LINHA = 3
@@ -193,13 +223,20 @@ CAMPOS_CARTAO = (
 
 
 @router.get("/pdf/sugestao-rolos/{pedido}")
-def pdf_sugestao_rolos(pedido: str) -> Response:
+def pdf_sugestao_rolos(
+    pedido: str,
+    usuario: _dependente,
+    empresa: str | None = Query(
+        None, description="Empresa do pedido; só o admin troca a do token"
+    ),
+) -> Response:
     """Mesmos cartões do legado (A4 paisagem, 3 por linha), servidos da view local.
 
     O legado gerava um arquivo temporário por request; aqui o PDF é montado em memória. Sem
-    itens para o pedido, `404` como no `oraculum`.
+    itens para o pedido, `404` como no `oraculum` — e o corte por empresa é o mesmo da rota
+    `/sugestao-rolos`.
     """
-    itens = sugestao_rolos(pedido)
+    itens = _sugestao(pedido, empresa_efetiva(usuario, empresa))
     if not itens:
         raise HTTPException(status_code=404, detail="Nenhum item encontrado")
 

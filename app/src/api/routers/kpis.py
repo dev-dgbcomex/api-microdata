@@ -14,16 +14,28 @@ escolhas que parecem erro e não são (ver Doc 44):
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 
-from src.api.auth.dependencias import exigir_autenticado
+from src.api.auth.escopos import (
+    ESCOPO_FATURAMENTO,
+    ESCOPO_FINANCEIRO,
+    exigir_escopo,
+)
+from src.api.auth.usuarios import Usuario
 from src.db import warehouse
 from src.etl import publicar
 
-router = APIRouter(tags=["kpis"], dependencies=[Depends(exigir_autenticado)])
+router = APIRouter(tags=["kpis"])
+
+_faturamento = Annotated[Usuario | None, Depends(exigir_escopo(ESCOPO_FATURAMENTO))]
+_financeiro = Annotated[Usuario | None, Depends(exigir_escopo(ESCOPO_FINANCEIRO))]
+# O dashboard junta os dois grupos, entao exige os dois escopos.
+_dashboard = Annotated[
+    Usuario | None, Depends(exigir_escopo(ESCOPO_FATURAMENTO, ESCOPO_FINANCEIRO))
+]
 
 LIMITE_VENCIMENTO = date(2050, 12, 31)
 
@@ -56,7 +68,7 @@ def _soma(sql: str, params: dict[str, Any] | None = None) -> float:
 
 
 @router.get("/faturamento/{data}")
-def faturamento(data: date) -> dict[str, float]:
+def faturamento(data: date, usuario: _faturamento) -> dict[str, float]:
     """`uspFaturamento`: Σ(Vr_Total) + Σ(Acres_Desc) do **mês** de `data`."""
     inicio = _primeiro_dia(data)
     return {
@@ -69,7 +81,7 @@ def faturamento(data: date) -> dict[str, float]:
 
 
 @router.get("/faturamento-dia/{data}")
-def faturamento_dia(data: date) -> dict[str, float]:
+def faturamento_dia(data: date, usuario: _faturamento) -> dict[str, float]:
     """`uspFaturamentoDia`: mesmo cálculo, por **dia** (`ISNULL(...,0)` no legado)."""
     return {
         "Faturamento": _soma(
@@ -80,7 +92,7 @@ def faturamento_dia(data: date) -> dict[str, float]:
 
 
 @router.get("/descontos/{data}")
-def descontos(data: date) -> dict[str, float]:
+def descontos(data: date, usuario: _faturamento) -> dict[str, float]:
     """`uspDesconto`: Σ(Acres_Desc) do mês de `data`."""
     inicio = _primeiro_dia(data)
     return {
@@ -96,7 +108,7 @@ def descontos(data: date) -> dict[str, float]:
 
 
 @router.get("/contas-pagas/{data}")
-def contas_pagas(data: date) -> dict[str, float]:
+def contas_pagas(data: date, usuario: _financeiro) -> dict[str, float]:
     """`uspListagemBaixasPagar`: Σ das baixas pagas no mês de `data`.
 
     No legado o `SELECT` estava comentado e a rota respondia `{}`, mas a `usp` devolve a coluna
@@ -116,7 +128,7 @@ def contas_pagas(data: date) -> dict[str, float]:
 
 
 @router.get("/devolucoes/{data}")
-def devolucoes(data: date) -> dict[str, float]:
+def devolucoes(data: date, usuario: _faturamento) -> dict[str, float]:
     """`uspDevolucao`: Σ(Vr_Contabil) das naturezas de devolução no mês de `data`."""
     inicio = _primeiro_dia(data)
     return {
@@ -129,7 +141,7 @@ def devolucoes(data: date) -> dict[str, float]:
 
 
 @router.get("/estornos/{data}")
-def estornos(data: date) -> dict[str, float]:
+def estornos(data: date, usuario: _faturamento) -> dict[str, float]:
     """`uspEstorno`: Σ(Vr_Nota) por `Data_Emissao` no mês de `data`."""
     inicio = _primeiro_dia(data)
     return {
@@ -145,13 +157,13 @@ def estornos(data: date) -> dict[str, float]:
 
 
 @router.get("/contas-receber-programado")
-def contas_receber_programado() -> dict[str, Any]:
+def contas_receber_programado(usuario: _financeiro) -> dict[str, Any]:
     """`uspDashFinanceiroContasReceberProgramado`: COUNT(QtdeDoc) e Σ(ValorTotal)."""
     return _programado("marts.financeiro_receber_programado", distinct=False)
 
 
 @router.get("/contas-pagar-programado")
-def contas_pagar_programado() -> dict[str, Any]:
+def contas_pagar_programado(usuario: _financeiro) -> dict[str, Any]:
     """`uspDashFinanceiroContasPagarProgramado`: COUNT(DISTINCT QtdeDoc) — diferença do legado."""
     return _programado("marts.financeiro_pagar_programado", distinct=True)
 
@@ -225,7 +237,7 @@ def _mes_anterior_doze(valor: date) -> date:
 
 
 @router.get("/custos-administrativos-anual")
-def custos_administrativos_anual(data: date | None = None) -> dict[str, Any]:
+def custos_administrativos_anual(usuario: _financeiro, data: date | None = None) -> dict[str, Any]:
     """`uspRel_CCusto_NiveisAnual` + `uspCustoAdmArmFat`: 12 meses fechados, tudo ÷ 12.
 
     `data` (opcional, padrão hoje) só ancora a janela; a procedure original não recebe data.
@@ -234,7 +246,9 @@ def custos_administrativos_anual(data: date | None = None) -> dict[str, Any]:
 
 
 @router.get("/custos-administrativos-mensal")
-def custos_administrativos_mensal(data: date | None = None) -> dict[str, Any]:
+def custos_administrativos_mensal(
+    usuario: _financeiro, data: date | None = None
+) -> dict[str, Any]:
     """`uspRel_CCusto_NiveisMensal` + `uspCustoAdmArmFatMensal`: último mês fechado.
 
     `data` (opcional, padrão hoje) só ancora a janela; a procedure original não recebe data.
@@ -246,10 +260,10 @@ def custos_administrativos_mensal(data: date | None = None) -> dict[str, Any]:
 
 
 @router.get("/dashboard-completo/{data}")
-def dashboard_completo(data: date) -> dict[str, Any]:
-    """Orquestra�ao do legado (#4 a #13 em 10 `EXEC`); aqui uma leitura por KPI.
+def dashboard_completo(data: date, usuario: _dashboard) -> dict[str, Any]:
+    """Orquestração do legado (#4 a #13 em 10 `EXEC`); aqui uma leitura por KPI.
 
-    Faturamento/descontos/devolu�oes/estornos/contas pagas usam o m�s de `data`; os custos e os
+    Faturamento/descontos/devoluções/estornos/contas pagas usam o mês de `data`; os custos e os
     programados sao sempre relativos a hoje, como nas procedures (que nao recebem data).
 
     E aqui que o **sync on-demand** acontece (D4): antes de responder, os agregados pequenos que o
@@ -260,14 +274,14 @@ def dashboard_completo(data: date) -> dict[str, Any]:
     publicar.sincronizar_antes_do_dashboard()
     return {
         "data_consulta": data.isoformat(),
-        "faturamento": faturamento(data),
-        "faturamento_dia": faturamento_dia(data),
-        "contas_pagas": contas_pagas(data),
-        "custos_administrativos_anual": custos_administrativos_anual(),
-        "custos_administrativos_mensal": custos_administrativos_mensal(),
-        "descontos": descontos(data),
-        "devolucoes": devolucoes(data),
-        "estornos": estornos(data),
-        "contas_receber_programado": contas_receber_programado(),
-        "contas_pagar_programado": contas_pagar_programado(),
+        "faturamento": faturamento(data, usuario),
+        "faturamento_dia": faturamento_dia(data, usuario),
+        "contas_pagas": contas_pagas(data, usuario),
+        "custos_administrativos_anual": custos_administrativos_anual(usuario),
+        "custos_administrativos_mensal": custos_administrativos_mensal(usuario),
+        "descontos": descontos(data, usuario),
+        "devolucoes": devolucoes(data, usuario),
+        "estornos": estornos(data, usuario),
+        "contas_receber_programado": contas_receber_programado(usuario),
+        "contas_pagar_programado": contas_pagar_programado(usuario),
     }

@@ -45,11 +45,17 @@ def exigir_autenticado(
     return usuario
 
 
+# Alias de modulo, declarado **depois** de `exigir_autenticado`. As fabricas (`exigir_papeis`,
+# `escopos.exigir_escopo`) o usam na assinatura e nao podem usar um alias local: com
+# `from __future__ import annotations` ele viraria um ForwardRef que o FastAPI nao resolve ao
+# montar o schema da rota (o erro so aparece quando a fabrica entra em um router de verdade).
+UsuarioAutenticado = Annotated[Usuario | None, Depends(exigir_autenticado)]
+
+
 def exigir_papeis(*papeis: str):
     """Fabrica de dependencia: exige **todos** os papeis informados (admin passa em tudo)."""
-    dependente = Annotated[Usuario | None, Depends(exigir_autenticado)]
 
-    def dependencia(usuario: dependente) -> Usuario | None:
+    def dependencia(usuario: UsuarioAutenticado) -> Usuario | None:
         if usuario is None:
             return None
         if PAPEL_ADMIN in usuario.papeis or set(papeis) <= set(usuario.papeis):
@@ -62,4 +68,9 @@ def exigir_papeis(*papeis: str):
     return dependencia
 
 
-__all__ = ["exigir_autenticado", "exigir_papeis", "esquema"]
+__all__ = [
+    "UsuarioAutenticado",
+    "esquema",
+    "exigir_autenticado",
+    "exigir_papeis",
+]

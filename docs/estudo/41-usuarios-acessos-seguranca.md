@@ -143,6 +143,26 @@ Cadastro completo de perfil (nome, cpf/cnpj, isento, email, tipo/status, sexo, n
 5. **Menu web (JSF)**: o portal atual (metadados em `menu`/`menu_it`) é o front que `dgbcomex` tende a substituir; o mapa nome⇄url JSF pode ser reaproveitado como requisito de telas da nova API.
 6. **Catálogo `Sistemas`** serve de dicionário de "módulos" — útil para documentar quais tabelas pertencem a que sistema nas marts.
 
+### 9.1 Como os itens 2 e 3 ficaram na API (D5/D6, 05/out/2026)
+
+Os itens acima eram recomendações; a implementação escolheu um recorte pragmático, porque
+`Usuario_Acessos` é ACL de **sistema × tópico** do ERP de desktop (250 tópicos só em SIMTecidos) e
+não se traduz 1:1 para 14 rotas de API:
+
+- **Escopos**: em vez de `fatura:read/write`, três nomes que correspondem às **telas** que o produto
+  tem — `estoque:leitura`, `faturamento:leitura`, `financeiro:leitura` — declarados por router
+  (`src/api/auth/escopos.py`, Doc 44 §6.1). São todos de leitura: a API alvo não escreve no ERP, então
+  não há `write` para mapear. `admin` e `'*'` passam em tudo; ausência de escopo é `403`.
+- **Nível de consulta (`CONSULTA`)**: não portado. Não há tela que peça menos que a leitura inteira do
+  KPI; se surgir, vira um escopo novo (ex.: `financeiro:bruto`).
+- **Multiempresa**: o token carrega **uma** empresa (`char(2)`), não o conjunto. O ERP fazia o mesmo
+  na prática pelo RLS do login (`SUSER_NAME()` → `SIS_UsuarioEmpresa`), e o warehouse só tem dados da
+  empresa `13`. Usuários com mais de uma empresa são, hoje, um `admin` sem empresa no token — que vê
+  todas e pode trocar com `?empresa=`. Se o produto precisar de usuário multiempresa de verdade, o
+  caminho é `empresa text[]` no token + o `empresa = any(:empresas)` no `where`.
+- **Identidades**: `Usuarios` (colaboradores) e `usuario` (representantes) continuam **fora** da API —
+  o cadastro é o `auth.usuario` do Neon, gerenciado por CLI, sem espelhar as 39/35 contas.
+
 ---
 
 ## 10. Próximos passos

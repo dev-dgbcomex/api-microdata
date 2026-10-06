@@ -114,7 +114,13 @@ class TestExigirAutenticado:
 
     def test_usuario_ativo_passa(self, ligado, monkeypatch):
         usuario = Usuario(
-            id=1, email="a@b.com", nome="A", papeis=["leitura"], empresa="13", ativo=True
+            id=1,
+            email="a@b.com",
+            nome="A",
+            papeis=["leitura"],
+            empresa="13",
+            ativo=True,
+            escopos=[],
         )
         monkeypatch.setattr(
             "src.api.auth.dependencias.usuarios.por_id", lambda _: usuario
@@ -127,7 +133,13 @@ class TestExigirAutenticado:
 
     def test_inativo_nao_passa(self, ligado, monkeypatch):
         usuario = Usuario(
-            id=1, email="a@b.com", nome="A", papeis=["leitura"], empresa=None, ativo=False
+            id=1,
+            email="a@b.com",
+            nome="A",
+            papeis=["leitura"],
+            empresa=None,
+            ativo=False,
+            escopos=[],
         )
         monkeypatch.setattr("src.api.auth.dependencias.usuarios.por_id", lambda _: usuario)
         token = tokens.emitir(usuario_id=1, email=usuario.email, papeis=usuario.papeis)
@@ -143,14 +155,20 @@ class TestExigirAutenticado:
 class TestPapeis:
     def test_admin_passa_em_tudo(self):
         admin = Usuario(
-            id=1, email="a@b.com", nome="", papeis=[PAPEL_ADMIN], empresa=None, ativo=True
+            id=1,
+            email="a@b.com",
+            nome="",
+            papeis=[PAPEL_ADMIN],
+            empresa=None,
+            ativo=True,
+            escopos=[],
         )
         dependencia = exigir_papeis("escrita")
         assert dependencia(admin) is admin
 
     def test_sem_o_papel_levanta_403(self):
         leitor = Usuario(
-            id=1, email="a@b.com", nome="", papeis=["leitura"], empresa=None, ativo=True
+            id=1, email="a@b.com", nome="", papeis=["leitura"], empresa=None, ativo=True, escopos=[]
         )
         dependencia = exigir_papeis("escrita")
         with pytest.raises(Exception) as erro:

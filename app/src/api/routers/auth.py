@@ -26,6 +26,7 @@ class RespostaLogin(BaseModel):
     expira_em_minutos: int
     papeis: list[str]
     empresa: str | None = None
+    escopos: list[str] = []
 
 
 class Perfil(BaseModel):
@@ -35,6 +36,7 @@ class Perfil(BaseModel):
     papeis: list[str]
     empresa: str | None
     admin: bool
+    escopos: list[str] = []
 
 
 @router.post("/auth/login", summary="Troca email e senha por um JWT curto")
@@ -56,6 +58,7 @@ def login(entrada: EntradaLogin) -> RespostaLogin:
         expira_em_minutos=get_settings().jwt_expire_minutes,
         papeis=usuario.papeis,
         empresa=usuario.empresa,
+        escopos=usuario.escopos,
     )
 
 
@@ -73,6 +76,7 @@ def eu(usuario: Annotated[Usuario | None, Depends(exigir_autenticado)]) -> Perfi
         papeis=usuario.papeis,
         empresa=usuario.empresa,
         admin=usuario.eh_admin,
+        escopos=usuario.escopos,
     )
 
 

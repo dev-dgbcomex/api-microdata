@@ -43,8 +43,8 @@ no Neon; mudanças de marts são aditivas e versionadas.
 | D2b | **Postgres local (warehouse)** | nativo / Docker / Neon | ✔ **resolvida**: PostgreSQL 17 **nativo** nesta máquina (`localhost:5432`), database `dgbcomex_warehouse` criado | B,C |
 | D3 | **Runner do ETL** | VM on-prem (mesma rede do ERP) / máquina dev / CI | máquina dev nesta fase (warehouse está aqui); VM separada quando for p/ produção | C |
 | D4 | **Frequência do ETL** | diária / horária / on-demand | ✔ **resolvida**: ETL pesado diário no **Postgres local**; **sync de KPIs p/ Neon é on-demand** (no request, quando defasado) | C,D,E |
-| D5 | **Auth do alvo** | reusar tabela `usuario` (senha em **texto claro** — ruim) vs auth nova JWT+bcrypt | **auth nova** (JWT+bcrypt) em `auth.usuario` no Neon; **entregue 05/out/2026** — falta o filtro por `empresa`/papel | E |
-| D6 | **Multiempresa** | `Codigo_Empresas` (`char(2)`) imbutido por token vs header | empresa do token (padrão `SIS_UsuarioEmpresa`); suportar `?empresa=13` p/ dev — o token **já carrega** `empresa`, falta aplicar o filtro na query | E |
+| D5 | **Auth do alvo** | reusar tabela `usuario` (senha em **texto claro** — ruim) vs auth nova JWT+bcrypt | **auth nova** (JWT+bcrypt) em `auth.usuario` no Neon; **entregue 05/out/2026** | E |
+| D6 | **Multiempresa** | `Codigo_Empresas` (`char(2)`) imbutido por token vs header | **empresa do token no `where`** (padrão `SIS_UsuarioEmpresa`); `?empresa=` só p/ `admin`; **escopos por tela** para o corte fino; **entregue 05/out/2026** | E |
 | D7 | **`/contas-pagas`** | reabrir como resumo vs lista vs manter `{}` | **resumo** `{ValorPago, QtdeBaixas}` do mês + lista paginada | E |
 | D8 | **PDF** | reportlab (mantém) vs weasyprint | reportlab (mesmo layout, zero refactor) | E |
 
@@ -356,11 +356,14 @@ pequeno** correspondente, on-demand — nunca o volume bruto do ERP.
 >
 > **Auth entregue (05/out/2026, D5):** `POST /auth/login` + `GET /auth/eu` em schema `auth` do
 > Neon (JWT HS256 + bcrypt, `JWT_SECRET` >= 32 bytes, `API_AUTENTICACAO_EXIGIDA` com padrão
-> `true`), `python -m src.cli usuario` para cadastrar e `tests/test_auth.py` cobrindo. **Falta**
-> da D6: filtrar as queries pela `empresa` do token (o token já a carrega) e o filtro por papel
-> por rota.
+> `true`), `python -m src.cli usuario` para cadastrar e `tests/test_auth.py` cobrindo.
 >
-> **Falta:** sync on-demand ao Neon (D4).
+> **Escopos e empresa entregues (05/out/2026, D6):** `auth.usuario.escopos text[]` (migration
+> `1004`, padrão `'{}'` = falha fechada), `src/api/auth/escopos.py` com os três escopos
+> (`estoque:leitura`, `faturamento:leitura`, `financeiro:leitura`) declarados **por tela** — o
+> dashboard exige os dois últimos grupos — e `empresa_efetiva()` aplicando o `Codigo_Empresas` do
+> token no `where` das rotas de peça/pedido. `?empresa=` só para `admin`. Os KPIs mantêm a paridade
+> (os marts já agregam as empresas 13/14). Tabela de telas e regras no Doc 44 §6.
 
 Entregáveis da fase:
 1. **Auth** (D5/D6): login, JWT curto, `bcrypt`; escopos por rota derivados dos tópicos.
@@ -417,7 +420,11 @@ warehouse local completo; legado desligado sem perda de tela.
 - [x] Fase E (2/3): **`GET /pdf/sugestao-rolos/{pedido}`** (reportlab, A4 paisagem, 3 cartões por
       linha, `Content-Disposition: inline`, 404 sem itens) gerado **em memória** a partir da view local.
 - [x] Fase E (2/3): **auth** (D5) - JWT HS256 + bcrypt em `auth.usuario` (Neon), `POST /auth/login` + `GET /auth/eu`, `Depends(exigir_autenticado)` nas 14 rotas de negocio,
-      `API_AUTENTICACAO_EXIGIDA=true` por padrao, `python -m src.cli usuario` e `tests/test_auth.py` (110 testes). **Falta** a D6: filtrar por `empresa` do token e por papel.
+      `API_AUTENTICACAO_EXIGIDA=true` por padrao, `python -m src.cli usuario` e `tests/test_auth.py`.
+- [x] Fase E (2/3): **escopos por tela + corte por empresa** (D6) - `auth.usuario.escopos` (`1004`, padrao `'{}'` = falha fechada), `src/api/auth/escopos.py`
+      com `estoque:leitura` / `faturamento:leitura` / `financeiro:leitura` declarados por rota, `empresa_efetiva()` aplicando o `Codigo_Empresas` do token no `where`
+      de `/dados`, `/sugestao-rolos` e `/pdf/sugestao-rolos`, `?empresa=` restrito ao `admin`. `tests/test_escopos_empresa.py` (67 testes: matriz das 14 telas,
+      isolamento por empresa e paridade com a leitura sem token).
 - [x] Fase E (3/3): **sync on-demand** dos agregados pequenos no Neon (D4) - `src/etl/publicar.py` + tabelas `marts.*` no Neon (`1003`), disparado por `/dashboard-completo`
       **so se defasado** (`max(fim)` de `etl.execucoes` > `publicado_em`), transacao `delete`+`insert` atomica, best-effort (falha
       de sync nao derruba o KPI), desligado por `NEON_PUBLICAR_AUTOMATICO` e publicado a mao com `publicar-neon`. 4.880
